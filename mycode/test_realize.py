@@ -212,14 +212,83 @@ for batch_id, test_ims in enumerate(test_input_handle):
     height = frames.shape[3]
     width = frames.shape[4]
 
-print('>>> 开始测试推理 ...')
-test_wrapper_pytorch_loader(model, args)
-print('>>> 推理完成! 结果已保存在 "{}" 下'.format(args.gen_frm_dir))
+    # Input Frames
+    input_frames = frames[:, :args.input_length]
+    target_frames = frames[:, args.input_length:,0]
 
-# 如果指定可视化，就绘制网络结构
-if args.visualize:
-    print('\n>>> 准备进行模型可视化 ...')
-    visualize_model(model, args)
+    input_frames = input_frames.reshape(batch, args.input_length, height, width)
+
+    # Evolution Network
+    intensity, motion = EvolutionNet(input_frames)
+    motion_ = motion.reshape(batch, args.gen_oc, 2, height, width)
+    intensity_ = intensity.reshape(batch, args.pred_length, 1, height, width)
+    series = []
+    series_bili = []
+    last_frames = test_ims[:, (args.input_length - 1):args.input_length, :, :, 0]
+    sample_tensor = torch.zeros(1, 1, args.img_height, args.img_width)
+    grid = make_grid(sample_tensor)
+    grid = grid.repeat(batch, 1, 1, 1)
+    for i in range(args.pred_length):
+        last_frames_bili = warp(last_frames, motion_[:, i], grid.cuda(), mode="bilinear", padding_mode="border")
+        last_frames = warp(last_frames, motion_[:, i], grid.cuda(), mode="nearest", padding_mode="border")
+        last_frames = last_frames + intensity_[:, i]
+        series.append(last_frames)
+        series_bili.append(last_frames_bili)
+    evo_result = torch.cat(series, dim=1)
+    evo_result = evo_result / 128
+
+    evo_result_bili = torch.cat(series_bili, dim=1)
+    evo_result_bili = evo_result_bili / 128
+    # todo 阻止梯度累计
+    loss_evo = evolution_loss(
+        pred_final=evo_result,
+        pred_bili=evo_result_bili,  # 如果有bilinear结果也可加
+        real=frames[:, args.input_length:,0],  # [B,T,H,W]
+        motion=motion_,  # [B,T,2,H,W]
+        lam=0.01
+    )
+
+
+    # Generative Network
+    evo_feature = GenerativeEncoder(torch.cat([input_frames, evo_result], dim=1))
+
+    gen_result_list = []
+    dis_result_pre_list = []
+    for _ in range(args.pool_loss_k):
+        noise = torch.randn(batch, args.ngf, height // 32, width // 32).cuda()
+        noise_feature = NoiseProjector(noise).reshape(batch, -1, 4, 4, 8, 8).permute(0, 1, 4, 5, 2, 3).reshape(batch, -1,
+                                                                                                          height // 8,
+                                                                                                          width // 8)
+
+        feature = torch.cat([evo_feature, noise_feature], dim=1)
+        gen_result = GenerativeDecoder(feature, evo_result)
+        gen_result = gen_result.unsqueeze(2)
+        gen_result_list.append(gen_result)
+
+        # print(gen_result.shape)
+
+        # Temporal Discriminator
+        dis_result_pre = TemporalDiscriminator(gen_result, input_frames.unsqueeze(2))
+        dis_result_pre_list.append(dis_result_pre)
+    dis_result_GT = TemporalDiscriminator(target_frames.unsqueeze(2), input_frames.unsqueeze(2))
+
+    loss_adv = adversarial_loss(dis_result_pre_list)
+    loss_pool = pool_regularization(target_frames.unsqueeze(2), gen_result_list)
+    loss_generative = 6*loss_adv + 20*loss_pool
+
+    loss_disc = discriminator_loss(dis_result_GT, dis_result_pre_list)
+
+    break
+
+
+# print('>>> 开始测试推理 ...')
+# test_wrapper_pytorch_loader(model, args)
+# print('>>> 推理完成! 结果已保存在 "{}" 下'.format(args.gen_frm_dir))
+#
+# # 如果指定可视化，就绘制网络结构
+# if args.visualize:
+#     print('\n>>> 准备进行模型可视化 ...')
+#     visualize_model(model, args)
 
 
 
