@@ -165,7 +165,40 @@ if os.path.exists(args.gen_frm_dir):
 os.makedirs(args.gen_frm_dir)
 
 print('>>> 初始化并加载模型 ...')
-model = Model(args)
+
+# network = Net(args).to(args.device)
+# stats = torch.load('../data/checkpoints/mrms_model.ckpt')
+# network.load_state_dict(stats)
+
+EvolutionNet = Evolution_Network(args.input_length, args.pred_length, base_c=32).to(args.device)
+GenerativeEncoder = Generative_Encoder(args.total_length, base_c=args.ngf).to(args.device)
+GenerativeDecoder = Generative_Decoder(args).to(args.device)
+NoiseProjector = Noise_Projector(args.ngf, args).to(args.device)
+TemporalDiscriminator = Temporal_Discriminator(args).to(args.device)
+
+
+# model = Model(args)
+
+batch_size_test = 16
+test_input_handle = datasets_factory.data_provider(args)
+args.batch_size = batch_size_test
+
+for batch_id, test_ims in enumerate(test_input_handle):
+    test_ims = test_ims['radar_frames'].numpy()
+    test_ims = torch.FloatTensor(test_ims).to(args.device)
+    print('input size:    ', test_ims.shape)
+
+    # img_gen = network(test_ims)
+
+
+    test_ims = test_ims[:, :, :, :, :1]
+    # B, T, H, W, C
+
+    frames = test_ims.permute(0, 1, 4, 2, 3)
+    # B, T, C, H, W
+    batch = frames.shape[0]
+    height = frames.shape[3]
+    width = frames.shape[4]
 
 print('>>> 开始测试推理 ...')
 test_wrapper_pytorch_loader(model, args)
