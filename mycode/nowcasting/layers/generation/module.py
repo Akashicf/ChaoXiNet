@@ -60,8 +60,6 @@ class SPADE(nn.Module):
     def __init__(self, norm_nc, label_nc):
         super().__init__()
 
-        ks = 3
-
         self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
         nhidden = 64
         ks = 3
