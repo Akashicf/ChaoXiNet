@@ -20,8 +20,17 @@ import netron
 # 假设你已有 nowcasting.data_provider.datasets_factory & nowcasting.models.nowcastnet
 # (若文件结构不同，可自行修改引用)
 from mycode.nowcasting.data_provider import datasets_factory
-from mycode.nowcasting.models.nowcastnet import Net  # 示例：Net是NowcastNet的网络类
+from mycode.nowcasting.layers.utils import warp, make_grid
 
+from mycode.nowcasting.models.nowcastnet import Net  # 示例：Net是NowcastNet的网络类
+from mycode.nowcasting.models.temporal_discriminator import Temporal_Discriminator
+from mycode.nowcasting.layers.generation.generative_network import Generative_Encoder, Generative_Decoder
+from mycode.nowcasting.layers.evolution.evolution_network import Evolution_Network
+from mycode.nowcasting.layers.generation.noise_projector import Noise_Projector
+
+from mycode.nowcasting.loss_function.loss_evolution import *
+from mycode.nowcasting.loss_function.loss_discriminator import *
+from mycode.nowcasting.loss_function.loss_generation import *
 # =========== 一些评估相关的依赖 (如果需要的话) ===========
 import mycode.nowcasting.evaluator as evaluator
 
@@ -157,8 +166,11 @@ args, unknown = parser.parse_known_args()
 # 其他派生参数
 args.evo_ic = args.total_length - args.input_length
 args.gen_oc = args.total_length - args.input_length
+args.pred_length = args.total_length - args.input_length
+
 args.ic_feature = args.ngf * 10
 
+args.pool_loss_k = 4
 # 创建输出文件夹（若已存在则删除重建）
 if os.path.exists(args.gen_frm_dir):
     shutil.rmtree(args.gen_frm_dir)
