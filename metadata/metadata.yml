@@ -1,0 +1,28 @@
+metadata_version: 1
+name: Copy of Skillful nowcasting of extreme precipitation with NowcastNet
+description: Code for "Skillful nowcasting of extreme precipitation with NowcastNet".
+authors:
+- name: Yuchen Zhang
+  affiliations:
+  - name: Tsinghua University
+- name: Mingsheng Long
+  affiliations:
+  - name: Tsinghua University
+- name: Kaiyuan Chen
+  affiliations:
+  - name: Tsinghua University
+- name: Lanxiang Xing
+  affiliations:
+  - name: Tsinghua University
+- name: Ronghua Jin
+  affiliations:
+  - name: China Meteorological Administration
+- name: Michael I. Jordan
+  affiliations:
+  - name: University of California, Berkeley
+- name: Jianmin Wang
+  affiliations:
+  - name: Tsinghua University
+corresponding_contributor:
+  name: Mingsheng Long
+  email: longmingsheng@gmail.com

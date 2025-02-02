@@ -1,0 +1,180 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import shutil
+import argparse
+import cv2
+import numpy as np
+import torch
+import time
+import sys
+
+# ===== 如果你需要下面的可视化功能，请确保已安装 =====
+# pip install torchview netron
+import torchview
+import torchvision
+import netron
+
+# =========== 模型相关的依赖 =============
+# 假设你已有 nowcasting.data_provider.datasets_factory & nowcasting.models.nowcastnet
+# (若文件结构不同，可自行修改引用)
+from mycode.nowcasting.data_provider import datasets_factory
+from mycode.nowcasting.models.nowcastnet import Net  # 示例：Net是NowcastNet的网络类
+
+# =========== 一些评估相关的依赖 (如果需要的话) ===========
+import mycode.nowcasting.evaluator as evaluator
+
+# 打开cudnn 加速
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+
+################################################################################
+#                            模型封装类 (合并自 model_factory.py)
+################################################################################
+class Model(object):
+    def __init__(self, configs):
+        self.configs = configs
+        # 根据名称选择网络，这里假设只有 NowcastNet 一种
+        networks_map = {
+            'NowcastNet': Net,
+        }
+        if configs.model_name in networks_map:
+            Network = networks_map[configs.model_name]
+            # 实例化网络
+            self.network = Network(configs).to(configs.device)
+            # 加载预训练参数
+            self.test_load()
+        else:
+            raise ValueError('Name of network unknown %s' % configs.model_name)
+
+    def test_load(self):
+        if not self.configs.pretrained_model:
+            raise ValueError("请指定 --pretrained_model 参数，否则无法加载模型权重！")
+        stats = torch.load(self.configs.pretrained_model, map_location=self.configs.device)
+        self.network.load_state_dict(stats)
+
+    def test(self, frames):
+        """对输入数据进行预测推理"""
+        frames_tensor = torch.FloatTensor(frames).to(self.configs.device)
+        self.network.eval()
+        with torch.no_grad():
+            next_frames = self.network(frames_tensor)
+            print(frames_tensor.shape)
+
+        return next_frames.detach().cpu().numpy()
+
+
+################################################################################
+#               测试函数包装 (合并自 run.py 中的 test_wrapper_pytorch_loader)
+################################################################################
+def test_wrapper_pytorch_loader(model, args):
+    # 读取数据
+    batch_size_test = args.batch_size
+    test_input_handle = datasets_factory.data_provider(args)
+    args.batch_size = batch_size_test
+
+    # 使用 evaluator 中的测试函数 (如果你有自己的测试逻辑可以自行修改)
+    evaluator.test_pytorch_loader(model, test_input_handle, args, 'test_result')
+
+
+################################################################################
+#                        可视化方法 (torchview & Netron)
+################################################################################
+def visualize_model(model, args):
+    """
+    1) torchview 直接绘制网络结构图
+    2) 导出 ONNX 后用 netron 可视化
+    """
+    # 做一个假输入，形状要和你的网络期望的输入相匹配
+    # 例如 NowcastNet 可能是 (batch, in_seq, channels, height, width)
+    dummy_input = torch.randn(
+        args.batch_size,
+        9,
+        args.img_height,
+        args.img_width,
+        args.img_ch
+    ).to(args.device)
+
+    print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
+    graph = torchview.draw_graph(model.network, input_size=dummy_input.shape, expand_nested=False, save_graph=True,
+                         filename="torchview_decoder", roll=False,hide_inner_tensors=True,graph_dir="UD")
+    # 保存为 PDF 或 SVG 等格式
+    graph.visual_graph
+    print("已保存 torchview 可视化结构图到 model_torchview.pdf")
+
+    # print("\n>>> [2] 使用 netron 可视化网络结构 (ONNX) ...")
+    # # 先导出 ONNX
+    # onnx_path = "nowcastnet.onnx"
+    # torch.onnx.export(
+    #     model.network,
+    #     dummy_input,
+    #     onnx_path,
+    #     input_names=['input'],
+    #     output_names=['output'],
+    #     opset_version=16 # 根据需要可指定更高版本
+    # )
+    # print(f"已导出模型为 {onnx_path} ... 正在启动 netron 可视化服务 (默认端口9999)")
+    #
+    # # 启动 netron
+    # netron.start(onnx_path, port=9999, browse=True)
+    # 注意：netron 会阻塞在此，直到你手动关闭可视化窗口或 ctrl+c
+
+
+################################################################################
+#                             主函数 (合并自 run.py)
+################################################################################
+
+if 'pydevconsole.py' in sys.argv[0]:
+    sys.argv = sys.argv[:1]
+
+parser = argparse.ArgumentParser(description='NowcastNet Inference & Visualization')
+parser.add_argument('--device', type=str, default='cuda:0')
+parser.add_argument('--worker', type=int, default=0)
+parser.add_argument('--cpu_worker', type=int, default=0)
+parser.add_argument('--dataset_name', type=str, default='radar')
+parser.add_argument('--dataset_path', type=str, default='data/dataset/mrms/figure')
+parser.add_argument('--model_name', type=str, default='NowcastNet')
+parser.add_argument('--pretrained_model', type=str, default='data/checkpoints/mrms_model.ckpt')
+parser.add_argument('--gen_frm_dir', type=str, default='results/us/')
+parser.add_argument('--case_type', type=str, default='normal')
+parser.add_argument('--input_length', type=int, default=9)
+parser.add_argument('--total_length', type=int, default=29)
+parser.add_argument('--img_height', type=int, default=512)
+parser.add_argument('--img_width', type=int, default=512)
+parser.add_argument('--img_ch', type=int, default=2)
+parser.add_argument('--batch_size', type=int, default=1)
+parser.add_argument('--num_save_samples', type=int, default=10)
+parser.add_argument('--ngf', type=int, default=32)
+
+# 你可以加一个可视化开关
+parser.add_argument('--visualize', action='store_true',
+                    help='是否使用 torchview 和 netron 进行模型结构可视化')
+
+args, unknown = parser.parse_known_args()
+
+
+# 其他派生参数
+args.evo_ic = args.total_length - args.input_length
+args.gen_oc = args.total_length - args.input_length
+args.ic_feature = args.ngf * 10
+
+# 创建输出文件夹（若已存在则删除重建）
+if os.path.exists(args.gen_frm_dir):
+    shutil.rmtree(args.gen_frm_dir)
+os.makedirs(args.gen_frm_dir)
+
+print('>>> 初始化并加载模型 ...')
+model = Model(args)
+
+print('>>> 开始测试推理 ...')
+test_wrapper_pytorch_loader(model, args)
+print('>>> 推理完成! 结果已保存在 "{}" 下'.format(args.gen_frm_dir))
+
+# 如果指定可视化，就绘制网络结构
+if args.visualize:
+    print('\n>>> 准备进行模型可视化 ...')
+    visualize_model(model, args)
+
+
+
