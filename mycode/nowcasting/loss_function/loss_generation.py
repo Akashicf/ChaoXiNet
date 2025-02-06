@@ -9,7 +9,7 @@ def wdis_l1(pred, gt):
     与之前演化网络的加权距离相同，可复用，也可简化实现
     这里示例: w(x) = min(24, 1+x), L1
     """
-    w = torch.clamp(1.0 + gt, max=24.0)
+    w = torch.clamp(1.0 + gt/65*128, max=24.0)
     return torch.abs(pred - gt) * w
 
 
@@ -47,17 +47,20 @@ def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2):
     total_loss = 0.0
     k = len(x_fakes)
 
+    x_fakes_ = []
     for i in range(k):
         fake_i = x_fakes[i]  # [B, T, H, W, C]
         fake_reshaped = fake_i.reshape(B * T * C, 1, H, W)
         fake_pool = F.max_pool2d(fake_reshaped, kernel_size, stride=stride)
         # shape [B*T*C, 1, H', W']
-        # 计算 wdis
-        wloss = wdis_l1(fake_pool, real_pool).mean()
-        total_loss += wloss
+        x_fakes_.append(fake_pool)
+    x_fakes_mean = torch.mean(torch.cat(x_fakes_, dim=1),dim=1)
+    # 计算 wdis
+    wloss = wdis_l1(x_fakes_mean, real_pool).mean()
+    total_loss += wloss
 
     # 这里不做平均也可，看您是否要 sum or avg
-    return total_loss / k
+    return total_loss
 
 
 def adversarial_loss(d_fake):
@@ -72,12 +75,12 @@ def adversarial_loss(d_fake):
     # --- 1) 对抗损失 (J_adv) ---
     if isinstance(d_fake, torch.Tensor):
         # 2) 判别器对 "生成数据" 期望输出 0
-        label_fake = torch.zeros_like(d_fake)
+        label_fake = torch.ones_like(d_fake)
         loss_adv = bce_crit(d_fake, label_fake)
     else:
         loss_adv = 0
         for d_fake_one in d_fake:
-            loss_adv += bce_crit(d_fake_one, torch.zeros_like(d_fake_one))
+            loss_adv += bce_crit(d_fake_one, torch.ones_like(d_fake_one))
         loss_adv = loss_adv / len(d_fake)
 
 
