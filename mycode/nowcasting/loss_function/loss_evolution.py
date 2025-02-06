@@ -2,22 +2,25 @@ import torch
 import torch.nn.functional as F
 
 
-def weight_func(x):
-    """
-    w(x) = min(24, 1 + x)
-    假设 x 的值 >= 0; 若有小于 0 的情况需根据实际处理
-    """
-    return torch.clamp(1.0 + x, max=24.0)
+def weight_func(x, max_value):
+    M = max_value[1]
+    m = max_value[0]
+    return torch.clamp(1.0 + (x-m)/(M-m)*128, max=24.0)
 
-
-def wdis_l1(pred, gt):
+def wdis_l1(pred, gt, reg_loss, max_value):
     """
     论文(5)式中的加权 L1 距离:
     L_{wdis}(x, x') = || x - x' ||_1 ⊙ w(x)
     pred, gt: [B, T, H, W]
     """
-    w = weight_func(gt)
-    return torch.abs(pred - gt) * w
+    w = weight_func(gt, max_value)
+    diff_w = torch.abs(pred - gt) * w
+    if reg_loss:
+        loss_n = torch.sum(diff_w, (-1, -2)) / torch.sum(w, (-1, -2))
+        loss = torch.sum(loss_n, -1).mean()
+    else:
+        loss = diff_w.mean() * gt.shapep[1]
+    return loss
 
 
 def sobel_filter_2d(x):
@@ -37,7 +40,7 @@ def sobel_filter_2d(x):
     return gx, gy
 
 
-def motion_reg(v, x):
+def motion_reg(v, x, reg_loss=True, value_lim=[0,65]):
     """
     v: [B, T, 2, H, W]  -> motion field
     x: [B, T, H, W]     -> real frames (for weighting)
@@ -51,21 +54,25 @@ def motion_reg(v, x):
         # v[:, t, 0] => vx; v[:, t, 1] => vy
         vx = v[:, t, 0]
         vy = v[:, t, 1]
-        w = weight_func(x[:, t])  # [B,H,W]
+        w = weight_func(x[:, t], value_lim)  # [B,H,W]
 
         # 计算 vx, vy 的梯度
         gx_vx, gy_vx = sobel_filter_2d(vx)
         gx_vy, gy_vy = sobel_filter_2d(vy)
-
-        # |∇vx|^2 + |∇vy|^2, 并乘上 w(x)
-        reg_vx = (gx_vx**2 + gy_vx**2) * w
-        reg_vy = (gx_vy**2 + gy_vy**2) * w
-        total_reg += reg_vx.mean() + reg_vy.mean()
+        if reg_loss:
+            # |∇vx|^2 + |∇vy|^2, 并乘上 w(x)
+            reg_vx = torch.sum((gx_vx**2 + gy_vx**2), (-1, -2)) / torch.sum(w, (-1, -2))
+            reg_vy = torch.sum((gx_vy**2 + gy_vy**2), (-1, -2)) / torch.sum(w, (-1, -2))
+            total_reg += reg_vx.mean() + reg_vy.mean()
+        else:
+            reg_vx = (gx_vx**2 + gy_vx**2) * w
+            reg_vy = (gx_vy**2 + gy_vy**2) * w
+            total_reg += reg_vx.mean() + reg_vy.mean()
 
     return total_reg
 
 
-def evolution_loss(pred_final, pred_bili, real, motion, lam=0.01):
+def accumulation_loss(pred_final, pred_bili, real, reg_loss=True, value_lim=[0,65]):
     """
     pred_final: x''_t (nearest+intensity)
     pred_bili : x'_t^{bili} (bilinear+intensity) - 可选, 若不需要就传 None
@@ -77,13 +84,20 @@ def evolution_loss(pred_final, pred_bili, real, motion, lam=0.01):
     #   包含 wdis( real, pred_bili ) + wdis( real, pred_final )
     #   若 pred_bili 不存在, 只对 pred_final 做
     accum_loss = 0.0
-    if pred_bili is not None:
-        accum_loss += wdis_l1(pred_bili, real).mean()
-    accum_loss += wdis_l1(pred_final, real).mean()
+    if reg_loss:
+        if pred_bili is not None:
+            accum_loss += wdis_l1(pred_bili, real, reg_loss, value_lim)
+        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim)
+        accum_loss = accum_loss * real.shape[1]
+    else:
+        if pred_bili is not None:
+            accum_loss += wdis_l1(pred_bili, real).mean()
+        accum_loss += wdis_l1(pred_final, real).mean()
+        accum_loss = accum_loss * real.shape[1]
 
     # 2) 运动正则
-    motion_loss = motion_reg(motion, real)
+    # motion_loss = motion_reg(motion, real)
 
     # 总损失
-    loss_evo = accum_loss + lam * motion_loss
-    return loss_evo
+    # loss_evo = accum_loss + lam * motion_loss
+    return accum_loss
