@@ -12,17 +12,17 @@ import sys
 import glob
 from tqdm import tqdm
 import matplotlib as mpl
-# ===== 如果你需要下面的可视化功能，请确保已安装 =====
 # pip install torchview netron
 import torchview
 import torchvision
 import netron
+import matplotlib.pyplot as plt
 
-# =========== 模型相关的依赖 =============
 from mycode.nowcasting.data_provider import datasets_factory
 from mycode.nowcasting.data_provider.npz_loader import *
 from mycode.nowcasting.layers.utils import warp, make_grid
 
+from mycode.nowcasting.models.model_factory import Model
 from mycode.nowcasting.models.nowcastnet import Net  # 示例：Net是NowcastNet的网络类
 from mycode.nowcasting.models.temporal_discriminator import Temporal_Discriminator
 from mycode.nowcasting.layers.generation.generative_network import Generative_Encoder, Generative_Decoder
@@ -32,63 +32,11 @@ from mycode.nowcasting.layers.generation.noise_projector import Noise_Projector
 from mycode.nowcasting.loss_function.loss_evolution import *
 from mycode.nowcasting.loss_function.loss_discriminator import *
 from mycode.nowcasting.loss_function.loss_generation import *
-# =========== 一些评估相关的依赖 (如果需要的话) ===========
 import mycode.nowcasting.evaluator as evaluator
 
 # 打开cudnn 加速
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
-
-
-
-
-################################################################################
-#                            模型封装类 (合并自 model_factory.py)
-################################################################################
-class Model(object):
-    def __init__(self, configs):
-        self.configs = configs
-        # 根据名称选择网络，这里假设只有 NowcastNet 一种
-        networks_map = {
-            'NowcastNet': Net,
-        }
-        if configs.model_name in networks_map:
-            Network = networks_map[configs.model_name]
-            # 实例化网络
-            self.network = Network(configs).to(configs.device)
-            # 加载预训练参数
-            self.test_load()
-        else:
-            raise ValueError('Name of network unknown %s' % configs.model_name)
-
-    def test_load(self):
-        if not self.configs.pretrained_model:
-            raise ValueError("请指定 --pretrained_model 参数，否则无法加载模型权重！")
-        stats = torch.load(self.configs.pretrained_model, map_location=self.configs.device)
-        self.network.load_state_dict(stats)
-
-    def test(self, frames):
-        """对输入数据进行预测推理"""
-        frames_tensor = torch.FloatTensor(frames).to(self.configs.device)
-        self.network.eval()
-        with torch.no_grad():
-            next_frames = self.network(frames_tensor)
-            print(frames_tensor.shape)
-
-        return next_frames.detach().cpu().numpy()
-
-
-################################################################################
-#               测试函数包装 (合并自 run.py 中的 test_wrapper_pytorch_loader)
-################################################################################
-def test_wrapper_pytorch_loader(model, args):
-    # 读取数据
-    batch_size_test = args.batch_size
-    test_input_handle = datasets_factory.data_provider(args)
-    args.batch_size = batch_size_test
-
-    # 使用 evaluator 中的测试函数 (如果你有自己的测试逻辑可以自行修改)
-    evaluator.test_pytorch_loader(model, test_input_handle, args, 'test_result')
 
 
 ################################################################################
@@ -134,10 +82,6 @@ def visualize_model(model, args):
     # 注意：netron 会阻塞在此，直到你手动关闭可视化窗口或 ctrl+c
 
 
-################################################################################
-#                             主函数 (合并自 run.py)
-################################################################################
-
 if 'pydevconsole.py' in sys.argv[0]:
     sys.argv = sys.argv[:1]
 
@@ -161,15 +105,13 @@ parser.add_argument('--img_ch', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_save_samples', type=int, default=1000)
 parser.add_argument('--ngf', type=int, default=32)
-
-# 你可以加一个可视化开关
 parser.add_argument('--visualize', action='store_true',
                     help='是否使用 torchview 和 netron 进行模型结构可视化')
 
 args, unknown = parser.parse_known_args()
 
 
-# 其他派生参数
+# 输出长度
 args.evo_ic = args.total_length - args.input_length
 args.gen_oc = args.total_length - args.input_length
 args.pred_length = args.total_length - args.input_length
@@ -179,7 +121,31 @@ args.ic_feature = args.ngf * 10
 args.pool_loss_k = 1
 args.use_num = 80000
 args.checkpoint_path = '../result'
-args.experiment = 'run17'
+data_dir = '../data/dataset/yangben'
+args.experiment = 'run31'
+# hyperparameters
+# evo_net
+alpha = 0.01
+lr_evo = 80e-5
+lr_decrease_epoch = 6
+lr_evo_de = 10e-5
+
+# generator
+lr_gen = 3e-5
+lr_gen_de = 1e-5
+beta = 100
+gamma = 1
+
+# TD
+lr_disc = 3e-5
+
+reg_loss = True
+value_lim=[0,65]
+
+num_epochs = 2000
+batch_size = 16
+
+
 # 创建输出文件夹（若已存在则删除重建）
 if os.path.exists(args.gen_frm_dir):
     shutil.rmtree(args.gen_frm_dir)
@@ -207,14 +173,14 @@ TemporalDiscriminator = Temporal_Discriminator(args).to(args.device)
 
 
 
-optim_evo = torch.optim.Adam(EvolutionNet.parameters(), lr=10e-4, betas=(0.5,0.999))
+optim_evo = torch.optim.Adam(EvolutionNet.parameters(), lr=lr_evo, betas=(0.5,0.999))
 optim_gen = torch.optim.Adam(
     list(GenerativeEncoder.parameters())
     + list(GenerativeDecoder.parameters())
     + list(NoiseProjector.parameters()),
-    lr=3e-4, betas=(0.5,0.999)
+    lr=lr_gen, betas=(0.5,0.999)
 )
-optim_disc = torch.optim.Adam(TemporalDiscriminator.parameters(), lr=3e-4, betas=(0.5,0.999))
+optim_disc = torch.optim.Adam(TemporalDiscriminator.parameters(), lr=lr_disc, betas=(0.5,0.999))
 
 
 # >>> 新增: 创建 / 加载 checkpoint 逻辑 <<<
@@ -251,6 +217,7 @@ if len(ckpts) > 0:
     start_epoch = checkpoint.get('epoch', 0)
     global_step = checkpoint.get('global_step', 0)
     train_losses = checkpoint.get('train_losses', [])
+    test_losses = checkpoint.get('test_losses', [])
     print(f"[INFO] Loaded checkpoint successfully! start_epoch={start_epoch}, global_step={global_step}")
 
 else:
@@ -261,10 +228,11 @@ else:
 # d = np.load('d:/Desktop/python/NowcastNet/data/dataset/yangben_augmented/data_dir_000_sample_0.npy')
 # torch.from_numpy(d['input']).bfloat16()
 
-batch_size_test = 14
-args.batch_size = batch_size_test
+
+args.batch_size = batch_size
 # train_loader, test_loader = datasets_factory.data_provider(args)
-data_dir = '../data/dataset/yangben'
+
+
 train_loader, test_loader = get_loaders(data_dir, batch_size=args.batch_size, num_workers=2)
 
 # ckpt2 = torch.load('../data/checkpoints/mrms_model.ckpt', map_location=args.device)
@@ -275,7 +243,7 @@ train_loader, test_loader = get_loaders(data_dir, batch_size=args.batch_size, nu
 # for x in checkpoint['optim_evo'].keys():
 #     print(x)
 
-num_epochs = 2000  # 例如您想训练多少个 epoch
+  # 例如您想训练多少个 epoch
 test_interval = 100
 
 # pbar = tqdm(range(num_epochs))
@@ -294,8 +262,26 @@ for epoch in range(num_epochs):
     else:
         pbar = tqdm(test_loader, total=len(test_loader), desc="Test")
 
+    if epoch == lr_decrease_epoch:
+        optim_evo = torch.optim.Adam(EvolutionNet.parameters(), lr=lr_evo_de, betas=(0.5, 0.999))
+        optim_gen = torch.optim.Adam(
+            list(GenerativeEncoder.parameters())
+            + list(GenerativeDecoder.parameters())
+            + list(NoiseProjector.parameters()),
+            lr=lr_gen_de, betas=(0.5, 0.999)
+        )
+
+    train_evo_loss = 0.0
+    train_accum_loss = 0.0
+    train_motion_loss = 0.0
+    train_disc_loss = 0.0
+    train_gen_loss = 0.0
+    train_adv_loss = 0.0
+    train_pool_loss = 0.0
+    train_count = 0
+
     t_dataload = time.time()
-    for batch_id, test_ims in enumerate(loader):
+    for batch_id, test_ims in enumerate(pbar):
 
         EvolutionNet.train()
         GenerativeEncoder.train()
@@ -371,7 +357,7 @@ for epoch in range(num_epochs):
             pred_bili=evo_result_bili,
             real=target_frames,  # [B, T_out, H, W]
         )
-        loss_evo = loss_accum + 0.01 * loss_motion
+        loss_evo = loss_accum + alpha * loss_motion
         if Train:
             optim_evo.zero_grad()
             loss_evo.backward()
@@ -415,7 +401,7 @@ for epoch in range(num_epochs):
         # ============ (a) 生成器更新 ============
         loss_adv = adversarial_loss(dis_result_pre_list)  # 生成器骗判别器
         loss_pool = pool_regularization(target_frames.unsqueeze(2), gen_result_list)
-        loss_generative = 6 * loss_adv + 20 * loss_pool
+        loss_generative = beta * loss_adv + gamma * loss_pool
 
         if Train:
             optim_gen.zero_grad()
@@ -441,20 +427,29 @@ for epoch in range(num_epochs):
         t_dis_backward = time.time() - t_dis_backward
 
         # 打印步骤时间
-        print(f'data_load={t_dataload:.2f}, evo_f={t_forward:.2f}, evo_phy={t_evo:.2f}, evo_b={t_backward:.2f}, gen_f={t_gen_forward:.2f}, gen_b={t_gen_backward:.2f}, dis_f={t_dis_forward:.2f}, dis_b={t_dis_backward:.2f}')
+        # print(f'data_load={t_dataload:.2f}, evo_f={t_forward:.2f}, evo_phy={t_evo:.2f}, evo_b={t_backward:.2f}, gen_f={t_gen_forward:.2f}, gen_b={t_gen_backward:.2f}, dis_f={t_dis_forward:.2f}, dis_b={t_dis_backward:.2f}')
         t_dataload = time.time()
 
 
         # ============ 打印与 tqdm 显示 ============
-        # pbar.set_postfix({
-        #     'loss_evo': f"{loss_evo.item():.4f}",
-        #     'acc': f"{loss_accum.item():.4f}",
-        #     'mot': f"{loss_motion.item():.4f}",
-        #     'loss_disc': f"{loss_disc.item():.4f}",
-        #     'loss_gen': f"{loss_generative.item():.4f}",
-        #     'adv': f"{loss_adv.item():.4f}",
-        #     'pool': f"{loss_pool.item():.4f}",
-        # })
+        pbar.set_postfix({
+            'loss_evo': f"{loss_evo.item():.4f}",
+            'acc': f"{loss_accum.item():.4f}",
+            'mot': f"{loss_motion.item():.4f}",
+            'loss_disc': f"{loss_disc.item():.4f}",
+            'loss_gen': f"{loss_generative.item():.4f}",
+            'adv': f"{loss_adv.item():.4f}",
+            'pool': f"{loss_pool.item():.4f}",
+        })
+
+        train_evo_loss += loss_evo.item()
+        train_accum_loss += loss_accum.item()
+        train_motion_loss += loss_motion.item()
+        train_disc_loss += loss_disc.item()
+        train_gen_loss += loss_generative.item()
+        train_adv_loss += loss_adv.item()
+        train_pool_loss += loss_pool.item()
+        train_count += 1
 
 
 
@@ -463,17 +458,17 @@ for epoch in range(num_epochs):
         global_step += 1  # 全局 iter 计数
 
         # 将当前batch各项loss以dict形式存下来:
-        train_losses.append({
-            'global_step': global_step,
-            'epoch': epoch,
-            'loss_evo': loss_evo.item(),
-            'loss_accum': loss_accum.item(),
-            'loss_motion': loss_motion.item(),
-            'loss_disc': loss_disc.item(),
-            'loss_gen': loss_generative.item(),
-            'loss_adv': loss_adv.item(),
-            'loss_pool': loss_pool.item(),
-        })
+    train_losses.append({
+        'global_step': global_step,
+        'epoch': epoch,
+        'loss_evo': train_evo_loss/train_count,
+        'loss_accum': train_accum_loss/train_count,
+        'loss_motion': train_motion_loss/train_count,
+        'loss_disc': train_disc_loss/train_count,
+        'loss_gen': train_gen_loss/train_count,
+        'loss_adv': train_adv_loss/train_count,
+        'loss_pool': train_pool_loss/train_count,
+    })
 
     # 每 100 iter 存一次 ckpt
     if epoch:
@@ -490,6 +485,7 @@ for epoch in range(num_epochs):
             'optim_evo': optim_evo.state_dict(),
             'optim_gen': optim_gen.state_dict(),
             'optim_disc': optim_disc.state_dict(),
+            'test_losses': test_losses,
         }, ckpt_path)
         print(f"[INFO] Saved checkpoint to {ckpt_path}")
 
@@ -582,7 +578,7 @@ for epoch in range(num_epochs):
                     pred_bili=evo_result_bili,
                     real=target_frames,  # [B, T_out, H, W]
                 )
-                loss_evo = loss_accum + 0.01 * loss_motion
+                loss_evo = loss_accum + alpha * loss_motion
 
                 # detach 演化输出, 避免对抗梯度回传
                 evo_result_detach = evo_result.detach() / 65
@@ -615,7 +611,7 @@ for epoch in range(num_epochs):
                 # ============ (a) 生成器更新 ============
                 loss_adv = adversarial_loss(dis_result_pre_list)  # 生成器骗判别器
                 loss_pool = pool_regularization(target_frames.unsqueeze(2), gen_result_list)
-                loss_generative = 6 * loss_adv + 20 * loss_pool
+                loss_generative = beta * loss_adv + gamma * loss_pool
 
 
                 # 判别器对 real
@@ -657,7 +653,7 @@ for epoch in range(num_epochs):
         })
 
         print(
-            f"====> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
+            f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
 
         if not Train:
             break
@@ -679,9 +675,9 @@ for epoch in range(num_epochs):
 #     visualize_model(model, args)
 
 
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+
+
+maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
 
 def stack_images_vertically(tensor_np, order='asc'):
     """
@@ -693,12 +689,15 @@ def stack_images_vertically(tensor_np, order='asc'):
     # list 中每个元素形状为 (H, W)
     return np.concatenate([img for img in tensor_np], axis=0)
 
+index = 6
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
-input_tensor = input_frames
-gt_tensor = target_frames
-# output_tensor = gen_result[:,:,0]
-output_tensor = gen_result
+input_tensor = input_frames[index:index+1]
+gt_tensor = target_frames[index:index+1]
+# output_tensor = gen_result[index:index+1,:, 0]
+output_tensor = nn.ReLU()(evo_result[index:index+1])
+
+# output_tensor = gen_result
 
 T_in = args.input_length
 T_out = args.evo_ic
@@ -734,6 +733,7 @@ cmap_diff = get_cmap_with_bad('bwr')
 # 使用最大的时间步数作为行数
 nrows = max(T_in, T_out)
 ncols = 4  # 分别为：Input, GT, Output, Diff
+vmin, vmax = 0, 40
 
 # 创建图形和子图
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 3 * nrows))
@@ -758,7 +758,7 @@ for r in range(nrows):
     if r < T_in:
         t_idx = T_in - 1 - r  # 降序：上面显示最大的 t
         masked_data = get_masked_array(input_np[t_idx])
-        im = axes[r, 0].imshow(masked_data, cmap=cmap_input)
+        im = axes[r, 0].imshow(masked_data, cmap=cmap_input, vmin=vmin, vmax=vmax)
         axes[r, 0].set_title(f"Input t={t_idx}")
         fig.colorbar(im, ax=axes[r, 0])
     else:
@@ -768,7 +768,7 @@ for r in range(nrows):
     if r < T_out:
         t_idx = r
         masked_data = get_masked_array(gt_np[t_idx])
-        im = axes[r, 1].imshow(masked_data, cmap=cmap_gt)
+        im = axes[r, 1].imshow(masked_data, cmap=cmap_gt, vmin=vmin, vmax=vmax)
         axes[r, 1].set_title(f"GT t={t_idx}")
         fig.colorbar(im, ax=axes[r, 1])
     else:
@@ -778,7 +778,7 @@ for r in range(nrows):
     if r < T_out:
         t_idx = r
         masked_data = get_masked_array(output_np[t_idx])
-        im = axes[r, 2].imshow(masked_data, cmap=cmap_output)
+        im = axes[r, 2].imshow(masked_data, cmap=cmap_output, vmin=vmin, vmax=vmax)
         axes[r, 2].set_title(f"Output t={t_idx}")
         fig.colorbar(im, ax=axes[r, 2])
     else:
@@ -789,7 +789,7 @@ for r in range(nrows):
         t_idx = r
         masked_data = get_masked_array(diff_np[t_idx])
         im = axes[r, 3].imshow(masked_data, cmap=cmap_diff)
-        axes[r, 3].set_title(f"Diff loss={loss_pool_list[t_idx]:.2f}, k={loss_pool_list[t_idx]/loss_pool_worst[t_idx]:.2f}")
+        axes[r, 3].set_title(f"Diff loss={loss_pool_list[t_idx]:.2f}, k={loss_pool_list[t_idx]/(loss_pool_worst[t_idx]+1e-8):.2f}")
         fig.colorbar(im, ax=axes[r, 3])
     else:
         axes[r, 3].axis('off')
@@ -797,3 +797,51 @@ for r in range(nrows):
 # 调整布局并显示图形
 plt.tight_layout()
 plt.show()
+
+
+
+def plot_train_test_losses(train_losses, test_losses,
+                           loss_keys=['loss_evo','loss_accum','loss_motion',
+                                      'loss_disc','loss_gen','loss_adv','loss_pool']):
+    """
+    根据 train_losses / test_losses 中的各项损失, 分别绘制子图。
+    每个子图对应一个 loss_key, 包含训练与测试两条曲线。
+    """
+
+    # 一共有7个需要展示的loss，准备 4行×2列子图(最后1个子图会空着或复用)
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 16))
+    axes = axes.ravel()  # 让axes变成一维数组,方便逐个索引
+
+    # 先把训练集 & 测试集的 x轴, y轴数据整理好
+    train_x = [d['global_step'] for d in train_losses]
+    # 对于测试集, 也许每100 step或每1个epoch记录一次, 因此数量可能比训练少
+    test_x  = [d['global_step'] for d in test_losses]
+
+    for i, key in enumerate(loss_keys):
+        ax = axes[i]
+
+        # 训练集上的 y 值
+        train_y = [d[key] for d in train_losses]
+        # 测试集上的 y 值
+        test_y  = [d[key] for d in test_losses]
+
+        ax.plot(train_x, train_y, label='Train', color='blue',  alpha=0.7)
+        ax.plot(test_x,  test_y,  label='Test',  color='orange',alpha=0.7)
+
+        ax.set_title(key)
+        ax.set_xlabel("global_step")
+        ax.set_ylabel(key)
+        ax.legend()
+        ax.grid(True)
+        # ax.set_xscale('log')
+        ax.set_yscale('log')
+
+
+    # 如果 loss_keys 不足8个，最后的子图可以隐藏掉
+    for j in range(len(loss_keys), len(axes)):
+        axes[j].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
+
+plot_train_test_losses(train_losses, test_losses)
