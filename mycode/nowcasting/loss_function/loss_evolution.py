@@ -2,24 +2,24 @@ import torch
 import torch.nn.functional as F
 
 
-def weight_func(x, max_value):
-    M = max_value[1]
-    m = max_value[0]
+def weight_func(x, value_lim):
+    M = value_lim[1]
+    m = value_lim[0]
     return torch.clamp(1.0 + (x-m)/(M-m)*128, max=24.0)
 
-def wdis_l1(pred, gt, reg_loss, max_value):
+def wdis_l1(pred, gt, reg_loss, value_lim):
     """
     论文(5)式中的加权 L1 距离:
     L_{wdis}(x, x') = || x - x' ||_1 ⊙ w(x)
     pred, gt: [B, T, H, W]
     """
-    w = weight_func(gt, max_value)
+    w = weight_func(gt, value_lim)
     diff_w = torch.abs(pred - gt) * w
     if reg_loss:
         loss_n = torch.sum(diff_w, (-1, -2)) / torch.sum(w, (-1, -2))
         loss = torch.sum(loss_n, -1).mean()
     else:
-        loss = diff_w.mean() * gt.shapep[1]
+        loss = diff_w.mean() * gt.shape[1]
     return loss
 
 
@@ -88,11 +88,11 @@ def accumulation_loss(pred_final, pred_bili, real, reg_loss=True, value_lim=[0,6
         if pred_bili is not None:
             accum_loss += wdis_l1(pred_bili, real, reg_loss, value_lim)
         accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim)
-        accum_loss = accum_loss * real.shape[1]
+        accum_loss = accum_loss
     else:
         if pred_bili is not None:
-            accum_loss += wdis_l1(pred_bili, real).mean()
-        accum_loss += wdis_l1(pred_final, real).mean()
+            accum_loss += wdis_l1(pred_bili, real, reg_loss, value_lim).mean()
+        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim).mean()
         accum_loss = accum_loss * real.shape[1]
 
     # 2) 运动正则

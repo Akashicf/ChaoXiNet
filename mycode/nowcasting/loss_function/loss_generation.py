@@ -4,16 +4,28 @@ import torch.nn as nn
 
 bce_crit = nn.BCEWithLogitsLoss()
 
-def wdis_l1(pred, gt):
+def weight_func(x, value_lim):
+    M = value_lim[1]
+    m = value_lim[0]
+    return torch.clamp(1.0 + (x-m)/(M-m)*128, max=24.0)
+
+def wdis_l1(pred, gt, reg_loss, value_lim):
     """
-    与之前演化网络的加权距离相同，可复用，也可简化实现
-    这里示例: w(x) = min(24, 1+x), L1
+    论文(5)式中的加权 L1 距离:
+    L_{wdis}(x, x') = || x - x' ||_1 ⊙ w(x)
+    pred, gt: [B, T, H, W]
     """
-    w = torch.clamp(1.0 + gt/65*128, max=24.0)
-    return torch.abs(pred - gt) * w
+    w = weight_func(gt, value_lim)
+    diff_w = torch.abs(pred - gt) * w
+    if reg_loss:
+        loss_n = torch.sum(diff_w, (-1, -2)) / torch.sum(w, (-1, -2))
+        loss = torch.sum(loss_n, -1).mean()
+    else:
+        loss = diff_w.mean() * gt.shape[1]
+    return loss
 
 
-def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2):
+def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2, reg_loss=True, value_lim=[0,65]):
     """
     x_real: [B, T, H, W, C], 真实场
     x_fakes: list or tensor of shape (k, [B, T, H, W, C]) or something
@@ -25,7 +37,7 @@ def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2):
 
     Return: scalar, J_pool
     """
-    device = x_real.device
+    # device = x_real.device
     B, T, C, H, W = x_real.shape
 
     # x_real = x_real.squeeze(2)
@@ -36,7 +48,7 @@ def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2):
 
     # [B, T, C, H, W] => [B*T*C, 1, H, W], 方便 2D 池化
     # print(x_real.shape)
-    real_reshaped = x_real.reshape(B * T * C, 1, H, W)
+    real_reshaped = x_real.reshape(B *T * C, H, W)
     # print(real_reshaped.shape)
 
     # 做 max-pool
@@ -50,13 +62,16 @@ def pool_regularization(x_real, x_fakes, kernel_size=5, stride=2):
     x_fakes_ = []
     for i in range(k):
         fake_i = x_fakes[i]  # [B, T, H, W, C]
-        fake_reshaped = fake_i.reshape(B * T * C, 1, H, W)
+        fake_reshaped = fake_i.reshape(B*T * C,1, H, W)
         fake_pool = F.max_pool2d(fake_reshaped, kernel_size, stride=stride)
         # shape [B*T*C, 1, H', W']
         x_fakes_.append(fake_pool)
     x_fakes_mean = torch.mean(torch.cat(x_fakes_, dim=1),dim=1)
     # 计算 wdis
-    wloss = wdis_l1(x_fakes_mean, real_pool).mean()
+    if reg_loss:
+        wloss = wdis_l1(x_fakes_mean, real_pool, reg_loss, value_lim)/B
+    else:
+        wloss = wdis_l1(x_fakes_mean, real_pool, reg_loss, value_lim)/x_real.shape[1]
     total_loss += wloss
 
     # 这里不做平均也可，看您是否要 sum or avg
