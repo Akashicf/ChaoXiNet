@@ -32,7 +32,7 @@ class MyNpzDataset(Dataset):
         return input_frames, target_frames
 
 
-def get_loaders(data_dir, batch_size=4, shuffle=True, num_workers=16,train_label=200,test_label=None,prefetch_factor=1):
+def get_loaders(data_dir, batch_size=4, shuffle=True, num_workers=16,train_label=200,test_label=None,prefetch_factor=2):
     """
     参数:
       data_dir: 包含所有 .npz 文件的文件夹，例如 '../data/dataset/yangben'
