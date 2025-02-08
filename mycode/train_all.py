@@ -104,7 +104,7 @@ parser.add_argument('--img_width', type=int, default=256)
 parser.add_argument('--img_ch', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_save_samples', type=int, default=1000)
-parser.add_argument('--ngf', type=int, default=32)
+parser.add_argument('--ngf', type=int, default=64)
 parser.add_argument('--visualize', action='store_true',
                     help='是否使用 torchview 和 netron 进行模型结构可视化')
 
@@ -118,23 +118,24 @@ args.pred_length = args.total_length - args.input_length
 
 args.ic_feature = args.ngf * 10
 
-args.pool_loss_k = 1
+args.pool_loss_k = 2
 args.use_num = 80000
 args.checkpoint_path = '../result'
-data_dir = '../data/dataset/yangben'
-args.experiment = 'run31'
+data_dir = '../data/dataset/yangben_all'
+args.experiment = 'run35'
 # hyperparameters
 # evo_net
 alpha = 0.01
 lr_evo = 80e-5
 lr_decrease_epoch = 6
+lr_stop_epoch = 18
 lr_evo_de = 10e-5
 
 # generator
 lr_gen = 3e-5
 lr_gen_de = 1e-5
-beta = 100
-gamma = 1
+beta = 6
+gamma = 0.5
 
 # TD
 lr_disc = 3e-5
@@ -143,7 +144,7 @@ reg_loss = True
 value_lim=[0,65]
 
 num_epochs = 2000
-batch_size = 16
+batch_size = 6
 
 
 # 创建输出文件夹（若已存在则删除重建）
@@ -164,7 +165,7 @@ print('>>> 初始化并加载模型 ...')
 # NoiseProjector = network.proj
 
 # network = None
-EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=32).to(args.device)
+EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=64).to(args.device)
 GenerativeEncoder = Generative_Encoder(args.total_length, base_c=args.ngf).to(args.device)
 GenerativeDecoder = Generative_Decoder(args).to(args.device)
 NoiseProjector = Noise_Projector(args.ngf, args).to(args.device)
@@ -197,10 +198,11 @@ train_losses = []
 test_losses = []
 
 if len(ckpts) > 0:
-    latest_ckpt = ckpts[-1]
+    latest_ckpt = ckpts[7]
     print(f"[INFO] Found checkpoint: {latest_ckpt}, now loading...")
     checkpoint = torch.load(latest_ckpt, map_location=args.device)
 
+    latest_ckpt = ckpts[-1]
     # 加载模型参数
     EvolutionNet.load_state_dict(checkpoint['EvolutionNet'])
     GenerativeEncoder.load_state_dict(checkpoint['GenerativeEncoder'])
@@ -250,7 +252,7 @@ test_interval = 100
 Train = True
 # loader = datasets_factory.data_provider(args)  # 可迭代对象
 
-for epoch in range(num_epochs):
+for epoch in range(start_epoch, num_epochs):
     # 在 tqdm 上设置 epoch 的提示
 
     if Train:
@@ -358,7 +360,7 @@ for epoch in range(num_epochs):
             real=target_frames,  # [B, T_out, H, W]
         )
         loss_evo = loss_accum + alpha * loss_motion
-        if Train:
+        if Train and epoch < lr_stop_epoch:
             optim_evo.zero_grad()
             loss_evo.backward()
             optim_evo.step()
@@ -452,10 +454,12 @@ for epoch in range(num_epochs):
         train_count += 1
 
 
-
+        if not Train:
+            break
 
         # >>> 新增: 记录与保存逻辑 <<<
         global_step += 1  # 全局 iter 计数
+
 
         # 将当前batch各项loss以dict形式存下来:
     train_losses.append({
@@ -655,8 +659,7 @@ for epoch in range(num_epochs):
         print(
             f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
 
-        if not Train:
-            break
+
     if not Train:
         break
 
@@ -677,25 +680,16 @@ for epoch in range(num_epochs):
 
 
 
-maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
+# maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
 
-def stack_images_vertically(tensor_np, order='asc'):
-    """
-    将 shape = (T, H, W) 的 numpy 数组中的每一帧（二维图像）沿垂直方向拼接成一张大图。
-    order: 'asc' 表示按照原顺序（升序），'desc' 表示倒序排列。
-    """
-    if order == 'desc':
-        tensor_np = tensor_np[::-1]  # 倒序
-    # list 中每个元素形状为 (H, W)
-    return np.concatenate([img for img in tensor_np], axis=0)
 
-index = 6
+index = 2
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
 input_tensor = input_frames[index:index+1]
 gt_tensor = target_frames[index:index+1]
-# output_tensor = gen_result[index:index+1,:, 0]
-output_tensor = nn.ReLU()(evo_result[index:index+1])
+output_tensor = gen_result[index:index+1,:, 0]
+# output_tensor = evo_result[index:index+1]
 
 # output_tensor = gen_result
 
@@ -733,7 +727,7 @@ cmap_diff = get_cmap_with_bad('bwr')
 # 使用最大的时间步数作为行数
 nrows = max(T_in, T_out)
 ncols = 4  # 分别为：Input, GT, Output, Diff
-vmin, vmax = 0, 40
+vmin, vmax = 0, 35
 
 # 创建图形和子图
 fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 3 * nrows))
@@ -799,46 +793,86 @@ plt.tight_layout()
 plt.show()
 
 
-
-def plot_train_test_losses(train_losses, test_losses,
-                           loss_keys=['loss_evo','loss_accum','loss_motion',
-                                      'loss_disc','loss_gen','loss_adv','loss_pool']):
+def plot_train_test_losses(train_losses,
+                           test_losses,
+                           x_axis='epoch',  # 'epoch' 或 'global_step' 等
+                           log_x=False,
+                           log_y=False):
     """
-    根据 train_losses / test_losses 中的各项损失, 分别绘制子图。
-    每个子图对应一个 loss_key, 包含训练与测试两条曲线。
+    根据 train_losses / test_losses 中的指定字段(loss_evo, loss_accum, etc.)
+    分子图绘制(包含训练曲线和测试曲线)，
+    并可选地对 x 或 y 轴使用 log 刻度。
+
+    - train_losses, test_losses: 列表，每个元素通常是 { 'epoch':..., 'loss_evo':..., ... }
+    - x_axis: 指定用哪个字段做横坐标, 默认 'epoch'
+    - log_x, log_y: 是否对 x / y 轴使用对数刻度
     """
 
-    # 一共有7个需要展示的loss，准备 4行×2列子图(最后1个子图会空着或复用)
-    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 16))
-    axes = axes.ravel()  # 让axes变成一维数组,方便逐个索引
+    # 先把 x 轴坐标取出来 (以 epoch 为例)
+    train_x = [d[x_axis] for d in train_losses]
+    test_x = [d[x_axis] for d in test_losses]
 
-    # 先把训练集 & 测试集的 x轴, y轴数据整理好
-    train_x = [d['global_step'] for d in train_losses]
-    # 对于测试集, 也许每100 step或每1个epoch记录一次, 因此数量可能比训练少
-    test_x  = [d['global_step'] for d in test_losses]
+    # 我们将 "loss_disc" 与 "loss_adv" 画在同一张子图，
+    # 其余 loss 各占一个子图。
+    subplot_keys = [
+        'loss_evo',
+        'loss_accum',
+        'loss_motion',
+        'loss_gen',
+        'loss_pool',
+        ('loss_disc', 'loss_adv')  # tuple 代表要在同一个子图里画多条曲线
+    ]
 
-    for i, key in enumerate(loss_keys):
+    # 准备 6 个子图: 前面 5 个单独画, 最后 1 个合并 disc & adv
+    fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(14, 12))
+    axes = axes.ravel()
+
+    for i, key_item in enumerate(subplot_keys):
         ax = axes[i]
 
-        # 训练集上的 y 值
-        train_y = [d[key] for d in train_losses]
-        # 测试集上的 y 值
-        test_y  = [d[key] for d in test_losses]
+        if isinstance(key_item, tuple):
+            # 把 'loss_disc' 和 'loss_adv' 在同一个子图上画多条线
+            title_str = []
+            for subkey in key_item:
+                train_y = [d[subkey] for d in train_losses]
+                test_y = [d[subkey] for d in test_losses]
 
-        ax.plot(train_x, train_y, label='Train', color='blue',  alpha=0.7)
-        ax.plot(test_x,  test_y,  label='Test',  color='orange',alpha=0.7)
+                ax.plot(train_x, train_y, label=f'Train {subkey}',
+                        linestyle='--', alpha=0.8)
+                ax.plot(test_x, test_y, label=f'Test  {subkey}',
+                        linestyle='-', alpha=0.8)
+                title_str.append(subkey)
 
-        ax.set_title(key)
-        ax.set_xlabel("global_step")
-        ax.set_ylabel(key)
+            ax.set_title(" / ".join(title_str))  # 子图标题
+        else:
+            # 普通情况, 一个子图画单独一个 loss_key
+            train_y = [d[key_item] for d in train_losses]
+            test_y = [d[key_item] for d in test_losses]
+            ax.plot(train_x, train_y, label=f'Train {key_item}',
+                    linestyle='--', alpha=0.8)
+            ax.plot(test_x, test_y, label=f'Test  {key_item}',
+                    linestyle='-', alpha=0.8)
+
+            ax.set_title(key_item)
+
         ax.legend()
         ax.grid(True)
-        # ax.set_xscale('log')
-        ax.set_yscale('log')
+        ax.set_xlabel(x_axis)
+        ax.set_ylabel("Loss")
+
+        # 如果需要对数 x 轴
+        if log_x:
+            ax.set_xscale('log')
+        # 如果需要对数 y 轴
+        if log_y:
+            ax.set_yscale('log')
+
+    # plt.tight_layout()
+    # plt.show()
 
 
     # 如果 loss_keys 不足8个，最后的子图可以隐藏掉
-    for j in range(len(loss_keys), len(axes)):
+    for j in range(len(subplot_keys), len(axes)):
         axes[j].set_visible(False)
 
     plt.tight_layout()
