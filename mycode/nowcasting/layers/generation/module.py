@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.utils.spectral_norm as spectral_norm
+from torch.nn.utils import spectral_norm
 
 class GenBlock(nn.Module):
     def __init__(self, fin, fout, opt, use_se=False, dilation=1, double_conv=False):
@@ -54,6 +54,7 @@ class GenBlock(nn.Module):
 class SPADE(nn.Module):
     def __init__(self, norm_nc, label_nc):
         super().__init__()
+        # label_nc是输出帧数，从label_nc卷积到nhidden再到norm_nc
 
         self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
         nhidden = 64

@@ -56,6 +56,6 @@ def test_pytorch_loader(model, test_input_handle, configs, itr):
                        res_path=path, vmin=vis_info['vmin'], vmax=vis_info['vmax'])
             save_plots(img_gen_plot,
                        labels=['pd{}'.format(i + 1) for i in range(9, configs.total_length)],
-                       res_path=path, vmin=vis_info['vmin'], vmax=vis_info['vmax'])
+                       res_path=path, vmin=vis_info['vmin' ], vmax=vis_info['vmax'])
 
     print('finished!')

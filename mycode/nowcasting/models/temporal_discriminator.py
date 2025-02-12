@@ -11,7 +11,7 @@ class Temporal_Discriminator(nn.Module):
           opt.input_length -> T_in
           opt.evo_ic       -> T_out
         """
-        self.T_in = opt.input_length
+        self.T_in = opt.input_length*opt.input_channel
         self.T_out = opt.evo_ic
 
         # -------------------

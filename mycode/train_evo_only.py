@@ -125,14 +125,14 @@ args.pool_loss_k = 2
 args.use_num = 80000
 args.checkpoint_path = '../result'
 data_dir = '../data/dataset/yangben_all'
-args.experiment = 'c1_evo_motion_run2'
+args.experiment = 'c1_evo_run3'
 # hyperparameters
 # evo_net
 alpha = 0.01
-lr_evo = 100e-5
-lr_decrease_epoch = 20
+lr_evo = 200e-5
+lr_decrease_epoch = 40
 lr_stop_epoch = 500
-lr_evo_de = 10e-5
+lr_evo_de = 20e-5
 
 # generator
 lr_gen = 3e-5
@@ -147,7 +147,7 @@ reg_loss = True
 value_lim=[0,65]
 
 num_epochs = 2000
-batch_size = 24
+batch_size = 48
 
 
 # 创建输出文件夹（若已存在则删除重建）
@@ -177,7 +177,7 @@ class SwinUnetMotion(nn.Module):
 
 
 
-EvolutionNet = SwinUnetMotion(config).cuda()
+EvolutionNet = SwinUnet(config, num_classes=10).cuda()
 # network = None
 # EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=32).to(args.device)
 # EvolutionNet = SwinUnet(config).cuda()
@@ -267,7 +267,7 @@ test_interval = 100
 Train = True
 # loader = datasets_factory.data_provider(args)  # 可迭代对象
 show_images = False
-use_motion = True
+use_motion = False
 
 for epoch in range(start_epoch, num_epochs):
     # 在 tqdm 上设置 epoch 的提示
@@ -480,7 +480,7 @@ for epoch in range(start_epoch, num_epochs):
         pbar.set_postfix({
             'loss_evo': f"{loss_evo.item():.4f}",
             'acc': f"{loss_accum.item():.4f}",
-            'mot': f"{loss_motion.item():.4f}",
+            # 'mot': f"{loss_motion.item():.4f}",
             # 'loss_disc': f"{loss_disc.item():.4f}",
             # 'loss_gen': f"{loss_generative.item():.4f}",
             # 'adv': f"{loss_adv.item():.4f}",
@@ -489,7 +489,7 @@ for epoch in range(start_epoch, num_epochs):
 
         train_evo_loss += loss_evo.item()
         train_accum_loss += loss_accum.item()
-        train_motion_loss += loss_motion.item()
+        # train_motion_loss += loss_motion.item()
         # train_disc_loss += loss_disc.item()
         # train_gen_loss += loss_generative.item()
         # train_adv_loss += loss_adv.item()
@@ -682,7 +682,7 @@ for epoch in range(start_epoch, num_epochs):
                 # 累加loss
                 test_evo_loss += (loss_evo.item())
                 test_accum_loss += (loss_accum.item())
-                test_motion_loss += (loss_motion.item())
+                # test_motion_loss += (loss_motion.item())
                 # test_disc_loss += (loss_disc.item())
                 # test_gen_loss += (loss_generative.item())
                 # test_adv_loss += (loss_adv.item())
@@ -714,7 +714,7 @@ for epoch in range(start_epoch, num_epochs):
         # print(
         #     f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
         print(
-            f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}")
+            f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}")
 
     if not Train:
         break
@@ -739,7 +739,7 @@ for epoch in range(start_epoch, num_epochs):
 # maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
 
 
-index = 2
+index = 1
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
 input_tensor = input_frames[index:index+1]

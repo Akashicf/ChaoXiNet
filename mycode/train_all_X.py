@@ -97,14 +97,14 @@ parser.add_argument('--pretrained_model', type=str, default='data/checkpoints/mr
 parser.add_argument('--gen_frm_dir', type=str, default='results/us/')
 parser.add_argument('--case_type', type=str, default='normal')
 parser.add_argument('--input_length', type=int, default=10)
-parser.add_argument('--input_channel', type=int, default=1)
+parser.add_argument('--input_channel', type=int, default=9)
 parser.add_argument('--total_length', type=int, default=20)
 parser.add_argument('--img_height', type=int, default=256)
 parser.add_argument('--img_width', type=int, default=256)
 parser.add_argument('--img_ch', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_save_samples', type=int, default=1000)
-parser.add_argument('--ngf', type=int, default=64)
+parser.add_argument('--ngf', type=int, default=32)
 parser.add_argument('--visualize', action='store_true',
                     help='是否使用 torchview 和 netron 进行模型结构可视化')
 
@@ -118,11 +118,11 @@ args.pred_length = args.total_length - args.input_length
 
 args.ic_feature = args.ngf * 10
 
-args.pool_loss_k = 2
+args.pool_loss_k = 1
 args.use_num = 80000
 args.checkpoint_path = '../result'
 data_dir = '../data/dataset/yangben_all'
-args.experiment = 'run35'
+args.experiment = 'runx1'
 # hyperparameters
 # evo_net
 alpha = 0.01
@@ -144,9 +144,9 @@ reg_loss = True
 value_lim=[0,65]
 
 num_epochs = 2000
-batch_size = 6
+batch_size = 8
 
-
+PerformanceDebugging = False
 # 创建输出文件夹（若已存在则删除重建）
 if os.path.exists(args.gen_frm_dir):
     shutil.rmtree(args.gen_frm_dir)
@@ -165,8 +165,8 @@ print('>>> 初始化并加载模型 ...')
 # NoiseProjector = network.proj
 
 # network = None
-EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=64).to(args.device)
-GenerativeEncoder = Generative_Encoder(args.total_length, base_c=args.ngf).to(args.device)
+EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=32).to(args.device)
+GenerativeEncoder = Generative_Encoder(args.pred_length+args.input_length*args.input_channel, base_c=args.ngf).to(args.device)
 GenerativeDecoder = Generative_Decoder(args).to(args.device)
 NoiseProjector = Noise_Projector(args.ngf, args).to(args.device)
 TemporalDiscriminator = Temporal_Discriminator(args).to(args.device)
@@ -255,14 +255,15 @@ Train = True
 for epoch in range(start_epoch, num_epochs):
     # 在 tqdm 上设置 epoch 的提示
 
-    if Train:
-        loader = train_loader
+    if PerformanceDebugging:
+        pbar = train_loader
+    # else:
+    #     loader = test_loader
     else:
-        loader = test_loader
-    if Train:
-        pbar = tqdm(train_loader, total=len(train_loader), desc=f"Epoch [{epoch + 1}/{num_epochs}]")
-    else:
-        pbar = tqdm(test_loader, total=len(test_loader), desc="Test")
+        if Train:
+            pbar = tqdm(train_loader, total=len(train_loader), desc=f"Epoch [{epoch + 1}/{num_epochs}]")
+        else:
+            pbar = tqdm(test_loader, total=len(test_loader), desc="Test")
 
     if epoch == lr_decrease_epoch:
         optim_evo = torch.optim.Adam(EvolutionNet.parameters(), lr=lr_evo_de, betas=(0.5, 0.999))
@@ -312,7 +313,7 @@ for epoch in range(start_epoch, num_epochs):
             input_frames, target_frames = test_ims
             batch, T, C1, C2, height, width = input_frames.shape
             last_frames = input_frames[:, -1:, 1, 0].to(args.device)
-            input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)
+            input_frames = input_frames.reshape(batch, -1, height, width).to(args.device)
             target_frames = target_frames[:, :, 1, 0].to(args.device)
 
         t_dataload = time.time() - t_dataload
@@ -429,20 +430,22 @@ for epoch in range(start_epoch, num_epochs):
         t_dis_backward = time.time() - t_dis_backward
 
         # 打印步骤时间
-        # print(f'data_load={t_dataload:.2f}, evo_f={t_forward:.2f}, evo_phy={t_evo:.2f}, evo_b={t_backward:.2f}, gen_f={t_gen_forward:.2f}, gen_b={t_gen_backward:.2f}, dis_f={t_dis_forward:.2f}, dis_b={t_dis_backward:.2f}')
+        if PerformanceDebugging:
+            print(f'data_load={t_dataload:.2f}, evo_f={t_forward:.2f}, evo_phy={t_evo:.2f}, evo_b={t_backward:.2f}, gen_f={t_gen_forward:.2f}, gen_b={t_gen_backward:.2f}, dis_f={t_dis_forward:.2f}, dis_b={t_dis_backward:.2f}')
         t_dataload = time.time()
 
 
         # ============ 打印与 tqdm 显示 ============
-        pbar.set_postfix({
-            'loss_evo': f"{loss_evo.item():.4f}",
-            'acc': f"{loss_accum.item():.4f}",
-            'mot': f"{loss_motion.item():.4f}",
-            'loss_disc': f"{loss_disc.item():.4f}",
-            'loss_gen': f"{loss_generative.item():.4f}",
-            'adv': f"{loss_adv.item():.4f}",
-            'pool': f"{loss_pool.item():.4f}",
-        })
+        if not PerformanceDebugging:
+            pbar.set_postfix({
+                'loss_evo': f"{loss_evo.item():.4f}",
+                'acc': f"{loss_accum.item():.4f}",
+                'mot': f"{loss_motion.item():.4f}",
+                'loss_disc': f"{loss_disc.item():.4f}",
+                'loss_gen': f"{loss_generative.item():.4f}",
+                'adv': f"{loss_adv.item():.4f}",
+                'pool': f"{loss_pool.item():.4f}",
+            })
 
         train_evo_loss += loss_evo.item()
         train_accum_loss += loss_accum.item()
@@ -542,7 +545,7 @@ for epoch in range(start_epoch, num_epochs):
                     input_frames, target_frames = test_ims
                     batch, T, C1, C2, height, width = input_frames.shape
                     last_frames = input_frames[:, -1:, 1, 0].to(args.device)
-                    input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)
+                    input_frames = input_frames.reshape(batch, -1, height, width).to(args.device)
                     target_frames = target_frames[:, :, 1, 0].to(args.device)
 
                 # ============ 演化网络前向 + 逐帧梯度截断 ============
@@ -683,7 +686,7 @@ for epoch in range(start_epoch, num_epochs):
 # maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
 
 
-index = 2
+index = 1
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
 input_tensor = input_frames[index:index+1]
@@ -797,7 +800,7 @@ def plot_train_test_losses(train_losses,
                            test_losses,
                            x_axis='epoch',  # 'epoch' 或 'global_step' 等
                            log_x=False,
-                           log_y=False):
+                           log_y=True):
     """
     根据 train_losses / test_losses 中的指定字段(loss_evo, loss_accum, etc.)
     分子图绘制(包含训练曲线和测试曲线)，

@@ -104,7 +104,7 @@ parser.add_argument('--img_width', type=int, default=256)
 parser.add_argument('--img_ch', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=1)
 parser.add_argument('--num_save_samples', type=int, default=1000)
-parser.add_argument('--ngf', type=int, default=64)
+parser.add_argument('--ngf', type=int, default=32)
 parser.add_argument('--visualize', action='store_true',
                     help='是否使用 torchview 和 netron 进行模型结构可视化')
 
@@ -122,7 +122,7 @@ args.pool_loss_k = 2
 args.use_num = 80000
 args.checkpoint_path = '../result'
 data_dir = '../data/dataset/yangben_all'
-args.experiment = 'run35'
+args.experiment = 'run32_1 '
 # hyperparameters
 # evo_net
 alpha = 0.01
@@ -144,7 +144,7 @@ reg_loss = True
 value_lim=[0,65]
 
 num_epochs = 2000
-batch_size = 6
+batch_size = 1
 
 
 # 创建输出文件夹（若已存在则删除重建）
@@ -165,7 +165,7 @@ print('>>> 初始化并加载模型 ...')
 # NoiseProjector = network.proj
 
 # network = None
-EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=64).to(args.device)
+EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=32).to(args.device)
 GenerativeEncoder = Generative_Encoder(args.total_length, base_c=args.ngf).to(args.device)
 GenerativeDecoder = Generative_Decoder(args).to(args.device)
 NoiseProjector = Noise_Projector(args.ngf, args).to(args.device)
@@ -251,6 +251,8 @@ test_interval = 100
 # pbar = tqdm(range(num_epochs))
 Train = True
 # loader = datasets_factory.data_provider(args)  # 可迭代对象
+show_images = True
+
 
 for epoch in range(start_epoch, num_epochs):
     # 在 tqdm 上设置 epoch 的提示
@@ -314,6 +316,17 @@ for epoch in range(start_epoch, num_epochs):
             last_frames = input_frames[:, -1:, 1, 0].to(args.device)
             input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)
             target_frames = target_frames[:, :, 1, 0].to(args.device)
+
+        if show_images:
+            img_in = input_frames[0,0].cpu().numpy()
+            img_out = target_frames[0,0].cpu().numpy()
+            plt.imshow(img_in)
+            plt.savefig('../img/input_%d.png' % global_step)
+            plt.imshow(img_out)
+            plt.savefig('../img/target_%d.png' % global_step)
+
+            global_step += 1
+            continue
 
         t_dataload = time.time() - t_dataload
             # ============ 演化网络前向 + 逐帧梯度截断 ============
@@ -683,7 +696,7 @@ for epoch in range(start_epoch, num_epochs):
 # maxpool_layer = nn.MaxPool2d(kernel_size=5, stride=2)
 
 
-index = 2
+index = 1
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
 input_tensor = input_frames[index:index+1]

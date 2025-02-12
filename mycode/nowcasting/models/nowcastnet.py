@@ -23,8 +23,10 @@ class Net(nn.Module):
 
     def forward(self, all_frames):
         all_frames = all_frames[:, :, :, :, :1]
+        # B, T, H, W, C
 
         frames = all_frames.permute(0, 1, 4, 2, 3)
+        # B, T, C, H, W
         batch = frames.shape[0]
         height = frames.shape[3]
         width = frames.shape[4]
@@ -41,12 +43,15 @@ class Net(nn.Module):
         last_frames = all_frames[:, (self.configs.input_length - 1):self.configs.input_length, :, :, 0]
         grid = self.grid.repeat(batch, 1, 1, 1)
         for i in range(self.pred_length):
+            # 为啥不用双线性
             last_frames = warp(last_frames, motion_[:, i], grid.cuda(), mode="nearest", padding_mode="border")
             last_frames = last_frames + intensity_[:, i]
             series.append(last_frames)
         evo_result = torch.cat(series, dim=1)
+        # print(torch.max(evo_result).item())
 
         evo_result = evo_result/128
+        # print(torch.max(evo_result).item())
         
         # Generative Network
         evo_feature = self.gen_enc(torch.cat([input_frames, evo_result], dim=1))
@@ -56,5 +61,6 @@ class Net(nn.Module):
 
         feature = torch.cat([evo_feature, noise_feature], dim=1)
         gen_result = self.gen_dec(feature, evo_result)
+        # print(gen_result.shape)
 
         return gen_result.unsqueeze(-1)

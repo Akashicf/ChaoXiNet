@@ -85,14 +85,16 @@ def accumulation_loss(pred_final, pred_bili, real, reg_loss=True, value_lim=[0,6
     #   若 pred_bili 不存在, 只对 pred_final 做
     accum_loss = 0.0
     if reg_loss:
+        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim)
         if pred_bili is not None:
             accum_loss += wdis_l1(pred_bili, real, reg_loss, value_lim)
-        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim)
+            accum_loss /= 2
         accum_loss = accum_loss
     else:
+        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim).mean()
         if pred_bili is not None:
             accum_loss += wdis_l1(pred_bili, real, reg_loss, value_lim).mean()
-        accum_loss += wdis_l1(pred_final, real, reg_loss, value_lim).mean()
+            accum_loss /= 2
         accum_loss = accum_loss * real.shape[1]
 
     # 2) 运动正则

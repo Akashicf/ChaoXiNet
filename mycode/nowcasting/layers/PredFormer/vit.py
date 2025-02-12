@@ -125,3 +125,9 @@ class ViT(nn.Module):
 
         x = self.to_latent(x)
         return self.mlp_head(x)
+
+
+net = ViT(image_size=256, patch_size=16, num_classes=5, dim=8, depth=2, heads=4, mlp_dim=512, pool = 'mean')
+input = torch.randn(16, 3, 224, 224)
+output = net(input)
+print(output.shape)

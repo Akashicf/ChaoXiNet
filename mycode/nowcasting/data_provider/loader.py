@@ -16,10 +16,12 @@ class InputHandle(Dataset):
         self.length = input_param['total_length']
         self.data_path = input_param['data_path']
         self.type = input_param['type'] #train/test/valid
+        self.use_num = input_param['use_num']
 
         self.case_list = []
         name_list = os.listdir(self.data_path)
         name_list.sort()
+        name_list = name_list[:self.use_num]
         for name in name_list:
             case = []
             for i in range(29):
