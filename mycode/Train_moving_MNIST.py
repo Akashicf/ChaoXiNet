@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
 import glob
+from torch.optim.lr_scheduler import OneCycleLR
 
 # 必须在导入任何依赖 OpenMP 的库之前设置该环境变量
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
@@ -28,9 +29,9 @@ class MovingMNISTDataset(Dataset):
     """
     def __init__(self, npz_path, train=True):
         super().__init__()
-        data = np.load(npz_path)  # 根据实际文件结构修改 key
+        data = np.load(npz_path)[:,:]  # 根据实际文件结构修改 key
         # 如果是训练集，data 形状可能类似 (60000, 20, 64, 64)
-        self.data = torch.tensor(data.astype(np.float32) / 255.0) # 归一化到 [0,1]
+        self.data = torch.tensor(data.astype(np.float32) / 255.0).cuda() # 归一化到 [0,1]
         self.train = train
 
     def __len__(self):
@@ -85,7 +86,7 @@ train_npz = '../data/dataset/movingMNIST/mnist_test_seq.npy'
 train_set = MovingMNISTDataset(train_npz, train=True)
 # test_set  = MovingMNISTDataset(test_npz,  train=False)
 
-train_loader = DataLoader(train_set, batch_size=24, shuffle=True)
+train_loader = DataLoader(train_set, batch_size=48, shuffle=True)
 # test_loader  = DataLoader(test_set,  batch_size=4, shuffle=False)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -100,18 +101,18 @@ model = QuadrupletSTTSNet(
     heads=8,
     dim_head=32,
     mlp_dim=1024,
-    dropout=0.0,
+    dropout=0.,
     T=10
 ).to(device)
 
-checkpoint_dir = '../result/mnist/run1'
+checkpoint_dir = '../result/mnist/run4'
 
 # 尝试搜集已有 ckpt
 ckpts = glob.glob(os.path.join(checkpoint_dir, '*.pth'))
 ckpts.sort()  # 根据名称排序，最后一个视作最新
 
 # if len(ckpts) > 0:
-#     latest_ckpt = ckpts[-1]
+#     latest_ckpt = ckpts[-2]
 #     print(f"[INFO] Found checkpoint: {latest_ckpt}, now loading...")
 #     checkpoint = torch.load(latest_ckpt, map_location='cuda:0')
 #
@@ -137,12 +138,13 @@ ckpts.sort()  # 根据名称排序，最后一个视作最新
 
 
 
-optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)
+optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01, betas=(0.5, 0.999))
+scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, steps_per_epoch=len(train_loader), epochs=200)
 train_losses = []
 
 
 # =========== 训练循环 ===========
-num_epochs = 5000  # 演示训练 5 个 epoch
+num_epochs = 200
 for epoch in range(num_epochs):
     pbar = tqdm(train_loader, total=len(train_loader), desc=f"Epoch [{epoch + 1}/{num_epochs}]")
     model.train()
@@ -155,12 +157,13 @@ for epoch in range(num_epochs):
 
         # 前向
         pred = model(x)  # [B, 1, 10, 64, 64]
-        loss = F.mse_loss(pred*255, y*255)
+        loss = F.mse_loss(pred*1, y*1)
 
         # 反向传播
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
         total_loss += loss.item() * x.size(0)
 
@@ -179,23 +182,26 @@ for epoch in range(num_epochs):
                 'loss': f"{train_loss:.4f}",
             })
 
-os.mkdir(checkpoint_dir)
 
-ckpt_path = os.path.join(checkpoint_dir, f"ckpt_step{epoch:06d}.pth")
+
+# =========== 保存模型 ===========
+os.mkdir(checkpoint_dir)
+ckpt_path = os.path.join(checkpoint_dir, f"ckpt_step{epoch:04d}.pth")
 torch.save({
     'epoch': epoch,
     'train_losses': train_losses,
     'EvolutionNet': model.state_dict(),
     'optim_evo': optimizer.state_dict(),
+    'scheduler_evo': scheduler.state_dict(),
 }, ckpt_path)
-# 你也可以在此保存模型
-# torch.save(model.state_dict(), 'quad_stts_mnist.pth')
+
 
 # if __name__ == "__main__":
 #     main()
 
 
-index = 4
+# =========== 可视化结果 ===========
+index = 3
 # 假设 input_tensor, gt_tensor, output_tensor 均为 torch.Tensor，形状为 (B, T, H, W)，B=1
 # 若它们已经是 numpy 数组，则可直接使用。
 input_tensor = x[index:index+1]
@@ -231,10 +237,10 @@ def get_cmap_with_bad(cmap_name):
     return cmap
 
 # 定义不同列所用的 colormap
-cmap_input = get_cmap_with_bad('viridis')
-cmap_gt = get_cmap_with_bad('viridis')
-cmap_output = get_cmap_with_bad('viridis')
-cmap_diff = get_cmap_with_bad('bwr')
+cmap_input = get_cmap_with_bad('gray')
+cmap_gt = get_cmap_with_bad('gray')
+cmap_output = get_cmap_with_bad('gray')
+cmap_diff = get_cmap_with_bad('hot')
 
 # 使用最大的时间步数作为行数
 nrows = max(T_in, T_out)
@@ -242,7 +248,7 @@ ncols = 4  # 分别为：Input, GT, Output, Diff
 vmin, vmax = 0, 1
 
 # 创建图形和子图
-fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 3 * nrows))
+fig, axes = plt.subplots(nrows=ncols, ncols=nrows, figsize=(3 * nrows , 12))
 # 确保 axes 是二维数组
 if nrows == 1:
     axes = np.expand_dims(axes, axis=0)
@@ -264,47 +270,51 @@ for r in range(nrows):
     if r < T_in:
         t_idx = T_in - 1 - r  # 降序：上面显示最大的 t
         masked_data = get_masked_array(input_np[t_idx])
-        im = axes[r, 0].imshow(masked_data, cmap=cmap_input, vmin=vmin, vmax=vmax)
-        axes[r, 0].set_title(f"Input t={t_idx}")
-        fig.colorbar(im, ax=axes[r, 0])
+        im = axes[0, r].imshow(masked_data, cmap=cmap_input, vmin=vmin, vmax=vmax)
+        axes[0, r].set_title(f"Input t={t_idx}")
+        fig.colorbar(im, ax=axes[0, r])
     else:
-        axes[r, 0].axis('off')
+        axes[0, r].axis('off')
 
     # 第二列：GT，时间步按升序排列（从上到下 t 从小到大）
     if r < T_out:
         t_idx = r
         masked_data = get_masked_array(gt_np[t_idx])
-        im = axes[r, 1].imshow(masked_data, cmap=cmap_gt, vmin=vmin, vmax=vmax)
-        axes[r, 1].set_title(f"GT t={t_idx}")
-        fig.colorbar(im, ax=axes[r, 1])
+        im = axes[1, r].imshow(masked_data, cmap=cmap_gt, vmin=vmin, vmax=vmax)
+        axes[1, r].set_title(f"GT t={t_idx}")
+        fig.colorbar(im, ax=axes[1, r])
     else:
-        axes[r, 1].axis('off')
+        axes[1, r].axis('off')
 
     # 第三列：Output，时间步按升序排列（从上到下 t 从小到大）
     if r < T_out:
         t_idx = r
         masked_data = get_masked_array(output_np[t_idx])
-        im = axes[r, 2].imshow(masked_data, cmap=cmap_output, vmin=vmin, vmax=vmax)
-        axes[r, 2].set_title(f"Output t={t_idx}")
-        fig.colorbar(im, ax=axes[r, 2])
+        im = axes[2, r].imshow(masked_data, cmap=cmap_output, vmin=vmin, vmax=vmax)
+        axes[2, r].set_title(f"Output t={t_idx}")
+        fig.colorbar(im, ax=axes[2, r])
     else:
-        axes[r, 2].axis('off')
+        axes[2, r].axis('off')
 
     # 第四列：Diff（GT与Output的差值），时间步按升序排列（从上到下 t 从小到大）
     if r < T_out:
         t_idx = r
         masked_data = get_masked_array(diff_np[t_idx])
-        im = axes[r, 3].imshow(masked_data, cmap=cmap_diff)
-        axes[r, 3].set_title(f"Diff loss={loss_pool_list[t_idx]:.2f}, k={loss_pool_list[t_idx]/(loss_pool_worst[t_idx]+1e-8):.2f}")
-        fig.colorbar(im, ax=axes[r, 3])
+        im = axes[3, r].imshow(masked_data, cmap=cmap_diff, vmin=vmin, vmax=vmax)
+        # axes[3, r].set_title(f"Diff loss={loss_pool_list[t_idx]:.2f}, k={loss_pool_list[t_idx]/(loss_pool_worst[t_idx]+1e-8):.2f}")
+        axes[3, r].set_title(f"Diff")
+
+        fig.colorbar(im, ax=axes[3, r])
     else:
-        axes[r, 3].axis('off')
+        axes[3, r].axis('off')
 
 # 调整布局并显示图形
 plt.tight_layout()
 plt.show()
 
+# =========== 可视loss ===========
 plt.plot(range(len(train_losses)), train_losses)
 plt.yscale('log')
-plt.xscale('log')
+# plt.xscale('log')
+plt.grid(True)
 plt.show()

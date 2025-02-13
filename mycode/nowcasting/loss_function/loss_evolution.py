@@ -72,7 +72,7 @@ def motion_reg(v, x, reg_loss=True, value_lim=[0,65]):
     return total_reg
 
 
-def accumulation_loss(pred_final, pred_bili, real, reg_loss=True, value_lim=[0,65]):
+def accumulation_loss(pred_final, pred_bili, real, reg_loss=True, value_lim=[0,1]):
     """
     pred_final: x''_t (nearest+intensity)
     pred_bili : x'_t^{bili} (bilinear+intensity) - 可选, 若不需要就传 None

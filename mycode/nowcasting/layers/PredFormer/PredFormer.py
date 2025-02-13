@@ -116,36 +116,37 @@ class QuadrupletSTTSBlock(nn.Module):
 
         # --- Step 1: S-Attn ---
         # reshape 到 [B, T, N, D]，再把 (T, N) 合并成 seq_len = T*N 来送入注意力
-        x_s1 = rearrange(x, 'b (t n) d -> b t n d', t=T, n=N)
+        x_s1 = rearrange(x, 'b (t n) d -> (b t) n d', t=T, n=N)
         # 在这里选择“空间维”作为 seq_len 处理: 先把 t 并进 batch 或者 transpose(t, n) 都可以
-        x_s1 = rearrange(x_s1, 'b t n d -> b (t n) d')
+        # x_s1 = rearrange(x_s1, 'b t n d -> (b t) n d')
 
         s1_out = self.s_attn1(x_s1) + x_s1
         s1_out = self.s_ffn1(s1_out) + s1_out
         # reshape 回 [B, T*N, D]
-        s1_out = rearrange(s1_out, 'b (t n) d -> b (t n) d', t=T, n=N)
+        # s1_out = rearrange(s1_out, '(b t) n d -> b (t n) d', t=T, n=N)
 
         # --- Step 2: T-Attn ---
         # 这里要在时间维做注意力，reshape 成 [B, T, N, D]，把 N 合并到 batch 或者做 transpose
-        x_t1 = rearrange(s1_out, 'b (t n) d -> b t n d', t=T, n=N)
-        x_t1 = rearrange(x_t1, 'b t n d -> b (n t) d')  # 合并 t 到 seq_len，也可 transpose 来实现
+        # x_t1 = rearrange(s1_out, 'b (t n) d -> b t n d', t=T, n=N)
+        x_t1 = rearrange(s1_out, '(b t) n d -> (b n) t d', t=T, n=N)  # 合并 t 到 seq_len，也可 transpose 来实现
         t1_out = self.t_attn1(x_t1) + x_t1
         t1_out = self.t_ffn1(t1_out) + t1_out
         # reshape 回 [B, T*N, D]
-        t1_out = rearrange(t1_out, 'b (n t) d -> b (t n) d', t=T, n=N)
+        # t1_out = rearrange(t1_out, 'b (n t) d -> b (t n) d', t=T, n=N)
 
         # --- Step 3: 再来一次 T-Attn ---
-        x_t2 = rearrange(t1_out, 'b (t n) d -> b t n d', t=T, n=N)
-        x_t2 = rearrange(x_t2, 'b t n d -> b (n t) d')
-        t2_out = self.t_attn2(x_t2) + x_t2
+        # x_t2 = rearrange(t1_out, '(b n) t d -> b t n d', t=T, n=N)
+        # x_t2 = rearrange(x_t2, 'b t n d -> b (n t) d')
+        t2_out = self.t_attn2(t1_out) + t1_out
         t2_out = self.t_ffn2(t2_out) + t2_out
-        t2_out = rearrange(t2_out, 'b (n t) d -> b (t n) d', t=T, n=N)
+        t2_out = rearrange(t2_out, '(b n) t d -> b (t n) d', t=T, n=N)
 
         # --- Step 4: 最后一次 S-Attn ---
-        x_s2 = rearrange(t2_out, 'b (t n) d -> b t n d', t=T, n=N)
-        x_s2 = rearrange(x_s2, 'b t n d -> b (t n) d')
+        x_s2 = rearrange(t2_out, 'b (t n) d -> (b t) n d', t=T, n=N)
+        # x_s2 = rearrange(x_s2, 'b t n d -> b (t n) d')
         s2_out = self.s_attn2(x_s2) + x_s2
         s2_out = self.s_ffn2(s2_out) + s2_out
+        s2_out = rearrange(s2_out, '(b t) n d -> b (t n) d', t=T, n=N)
 
         return s2_out  # [B, T*N, D]
 
@@ -157,36 +158,23 @@ def build_3d_sin_pos_encoding(T, H_blocks, W_blocks, dim):
     """
 
     # 创建存放结果的 tensor
-    pe = torch.zeros(T, H_blocks, W_blocks, dim)
+    # pe = torch.zeros(T, H_blocks, W_blocks, dim)
 
     # 为了简化，这里假设对 (t, h, w) 这三维分别使用不同频率的正余弦编码
     # freq_base 用于控制频率跨度，可根据需要调整
     freq_base = 10000.0
-
+    N = T * H_blocks * W_blocks
     # t -> 第 0 维
-    for t_idx in range(T):
-        for h_idx in range(H_blocks):
-            for w_idx in range(W_blocks):
-                # 计算位置 (t_idx, h_idx, w_idx)
-                # 构造 pos = [t_idx, h_idx, w_idx] 再映射到 [0, 1, 2, ...] 维度
-                # 这里只是示例，可以细化为对 dim 各自编码
-                pos = torch.tensor([t_idx, h_idx, w_idx], dtype=torch.float32)
-
-                # 对每个通道 c (0 ~ dim-1)，用正余弦函数
-                for c in range(dim):
-                    div_term = (c // 6)  # 这里只是演示，每 6 维换一种频率等
-                    # 也可以根据 c 在整段维度上的位置算频率
-                    phase = pos[c % 3]  # 取 t/h/w
-                    # 常见做法： sin(pos / (freq_base^(2i/dim))) + cos(...)
-                    # 这里仅做最简单的示例
-                    if c % 2 == 0:
-                        pe[t_idx, h_idx, w_idx, c] = math.sin(phase / (freq_base ** div_term))
-                    else:
-                        pe[t_idx, h_idx, w_idx, c] = math.cos(phase / (freq_base ** div_term))
+    P = torch.zeros((1, N, dim))
+    X = torch.arange(N, dtype=torch.float32).reshape(
+        -1, 1) / torch.pow(10000, torch.arange(
+        0, dim, 2, dtype=torch.float32) / dim)
+    P[:, :, 0::2] = torch.sin(X)
+    P[:, :, 1::2] = torch.cos(X)
 
     # reshape 成 [T * N, dim], 并添加 batch 维度 1
-    pe = rearrange(pe, 't h w d -> 1 (t h w) d')
-    return pe
+    # pe = rearrange(pe, 't h w d -> 1 (t h w) d')
+    return P
 
 
 class QuadrupletSTTSNet(nn.Module):
@@ -208,6 +196,7 @@ class QuadrupletSTTSNet(nn.Module):
             dim_head=32,
             mlp_dim=256,
             dropout=0.0,
+            dropout_path=0.0,
             T=10  # 时间帧长度
     ):
         super().__init__()
@@ -229,22 +218,53 @@ class QuadrupletSTTSNet(nn.Module):
         self.patch_embed = nn.Sequential(
             # 将 (B, C, T, H, W) -> (B, T, N, patch_dim)
             # 其中 N = H_blocks * W_blocks
-            Rearrange('b c t (h p1) (w p2) -> b t (h w) (p1 p2 c)',
-                      p1=self.patch_height, p2=self.patch_width),
-            nn.LayerNorm(self.patch_dim),
-            nn.Linear(self.patch_dim, dim)
+            Rearrange('b c t h w -> (b t) c h w'),
+            # nn.LayerNorm(self.patch_dim),
+            nn.Conv2d(in_channels, dim, kernel_size=patch_size, stride=patch_size),
+            Rearrange('(b t) c h w -> b t (h w) c', t=self.T)
         )
+
+
+
+        # self.patch_embed = nn.Sequential(
+        #     # 将 (B, C, T, H, W) -> (B, T, N, patch_dim)
+        #     # 其中 N = H_blocks * W_blocks
+        #     Rearrange('b c t (h p1) (w p2) -> b t (h w) (p1 p2 c)',
+        #               p1=self.patch_height, p2=self.patch_width),
+        #     nn.LayerNorm(self.patch_dim),
+        #     nn.Linear(self.patch_dim, dim, bias=False)
+        # )
+
+        # self.pos_embed = nn.Parameter(torch.zeros(1, num_patches+1, embed_dim))
+        self.pos_drop = nn.Dropout(p=dropout_path)
+
+        # self.time_embed = nn.Parameter(torch.zeros(1, num_frames, embed_dim))
+        self.time_drop = nn.Dropout(p=dropout_path)
+
 
         # 2) Quadruplet-STTS blocks (此处仅演示，假设已在其他文件中定义好)
         Modules = []
         for _ in range(depth):
             Modules.append(QuadrupletSTTSBlock(dim, heads, dim_head, mlp_dim, dropout=dropout))
+            # Modules.append(QuadrupletSTTSBlock(image_size=image_size,  # 图像高宽
+            # patch_size=patch_size,
+            # in_channels=in_channels,  # 输入图像通道数
+            # dim=dim,  # patch embedding 后的维度
+            # depth=depth,  # 堆叠多少个 Quadruplet-STTS block
+            # heads=heads,
+            # dim_head=dim_head,
+            # mlp_dim=mlp_dim,
+            # dropout=dropout,
+            # dropout_path=dropout_path,
+            # T=T ))
+
+
         self.blocks = nn.ModuleList(Modules)
 
         # 3) 输出层：将维度投影回原图
         self.to_img = nn.Sequential(
             nn.LayerNorm(dim),
-            nn.Linear(dim, self.patch_dim)
+            nn.Linear(dim, self.patch_dim, bias=False),
         )
 
         self.final_reshape = Rearrange(
@@ -279,6 +299,11 @@ class QuadrupletSTTSNet(nn.Module):
         # 2) 加上位置编码 [1, T*N, dim]
         #   注意如果输入 batch 较大，可 repeat 到 [B, T*N, dim]
         x = x + self.pos_embed[..., :].expand(B, -1, -1)
+        x = rearrange(x,'b (t n) d -> (b t) n d', t=T, n=self.num_patches)
+        x = self.pos_drop(x)
+        x = rearrange(x, '(b t) n d -> (b n) t d', t=T, n=self.num_patches)
+        x = self.time_drop(x)
+        x = rearrange(x, '(b n) t d -> b (t n) d', t=T, n=self.num_patches)
 
         # 3) 逐层 STTS
         for block in self.blocks:
@@ -295,51 +320,52 @@ class QuadrupletSTTSNet(nn.Module):
         out = self.final_reshape(x)  # [B, C, T, H, W]
         return out
 
-B, C, T, H, W = 2, 1, 10, 64, 64
-x = torch.randn(B, C, T, H, W)
-
-net = QuadrupletSTTSNet(
-    image_size=64,
-    patch_size=8,
-    in_channels=1,
-    dim=128,
-    depth=2,       # 堆叠 2 个 Quadruplet-STTS block
-    heads=4,
-    dim_head=32,
-    mlp_dim=256,
-    dropout=0.1,
-    T=10
-)
-
-out = net(x)
-print("输入:", x.shape, "输出:", out.shape)
-
-
-import torchview
-
-dummy_input = torch.randn(2, 1, 10, 64, 64)
+# B, C, T, H, W = 2, 1, 10, 256, 256
+# x = torch.randn(B, C, T, H, W)
+#
+# net = QuadrupletSTTSNet(
+#     image_size=256,
+#     patch_size=32,
+#     in_channels=1,
+#     dim=128,
+#     depth=2,       # 堆叠 2 个 Quadruplet-STTS block
+#     heads=4,
+#     dim_head=32,
+#     mlp_dim=256,
+#     dropout=0.1,
+#     T=10
+# )
+#
+# out = net(x)
+# print("输入:", x.shape, "输出:", out.shape)
 
 
 
-print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
-graph = torchview.draw_graph(net, input_size=dummy_input.shape, expand_nested=True, save_graph=True,
-                             filename="PerdFormer", roll=False, hide_inner_tensors=True, graph_dir='UD')
-
-# 渲染并保存为 PDF（也可以保存为 SVG 等格式）
-graph.visual_graph.attr(size="10000,20000!")
-# graph.visual_graph.attr(ranksep="0.5")
-# graph.render(format='pdf', cleanup=True)
-print("已保存 torchview 可视化结构图到 model.pdf")
-
-
-dot = graph.visual_graph
-# dot.attr(rankdir="LR")  # 改为水平布局
-dot.attr(size="10000,40000!")  # 调整 size
-dot.attr(ratio="compress")
-dot.render(
-    filename="model_torchview",  # 输出文件名（不含后缀）
-    format="png",  # 输出格式
-    directory=".",  # 输出到当前文件夹
-    cleanup=True  # 渲染后删除中间文件
-)
-print("已保存 torchview 可视化结构图到 model_torchview.pdf")
+# import torchview
+#
+# dummy_input = torch.randn(2, 1, 10, 64, 64)
+#
+#
+#
+# print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
+# graph = torchview.draw_graph(net, input_size=dummy_input.shape, expand_nested=True, save_graph=True,
+#                              filename="PerdFormer", roll=False, hide_inner_tensors=True, graph_dir='UD')
+#
+# # 渲染并保存为 PDF（也可以保存为 SVG 等格式）
+# graph.visual_graph.attr(size="10000,20000!")
+# # graph.visual_graph.attr(ranksep="0.5")
+# # graph.render(format='pdf', cleanup=True)
+# print("已保存 torchview 可视化结构图到 model.pdf")
+#
+#
+# dot = graph.visual_graph
+# # dot.attr(rankdir="LR")  # 改为水平布局
+# dot.attr(size="10000,40000!")  # 调整 size
+# dot.attr(ratio="compress")
+# dot.render(
+#     filename="model_torchview",  # 输出文件名（不含后缀）
+#     format="png",  # 输出格式
+#     directory=".",  # 输出到当前文件夹
+#     cleanup=True  # 渲染后删除中间文件
+# )
+# print("已保存 torchview 可视化结构图到 model_torchview.pdf")
