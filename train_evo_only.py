@@ -107,12 +107,12 @@ parser.add_argument('--total_length', type=int, default=20)
 parser.add_argument('--img_height', type=int, default=256)
 parser.add_argument('--img_width', type=int, default=256)
 parser.add_argument('--img_ch', type=int, default=2)
-parser.add_argument('--batch_size', type=int, default=1)
+parser.add_argument('--batch_size', type=int, default=4)
 parser.add_argument('--num_save_samples', type=int, default=1000)
 parser.add_argument('--ngf', type=int, default=32)
 parser.add_argument('--visualize', action='store_true',
                     help='是否使用 torchview 和 netron 进行模型结构可视化')
-parser.add_argument('--ts', type=bool, default=False)
+parser.add_argument('--ts', action='store_true', default=False)
 
 args, unknown = parser.parse_known_args()
 
@@ -131,7 +131,7 @@ data_dir = '../data/dataset/yangben_all'
 data_dir_h5 = '../data/dataset/yangben_solo_h5'
 
 # merged_data_dir = '../data/dataset/merged_data.npz'
-args.experiment = 'run6'
+args.experiment = 'run7'
 # hyperparameters
 # evo_net
 alpha = 0.01
@@ -153,7 +153,7 @@ reg_loss = True
 value_lim=[0,65]
 
 num_epochs = 500
-batch_size = 1
+# batch_size = 1
 use_amp = True
 
 # 创建输出文件夹（若已存在则删除重建）
@@ -237,10 +237,10 @@ test_losses = []
 # torch.from_numpy(d['input']).bfloat16()
 
 
-args.batch_size = batch_size
+# args.batch_size = batch_size
 # train_loader, test_loader = datasets_factory.data_provider(args)
 
-train_loader, test_loader = get_loaders_h5(data_dir_h5, batch_size=batch_size, num_workers=2)
+train_loader, test_loader = get_loaders_h5(data_dir_h5, batch_size=args.batch_size, num_workers=2)
 # train_loader, test_loader = get_merged_loader(merged_data_dir, batch_size=batch_size, num_workers=2)
 # train_loader, test_loader = get_loaders(data_dir, batch_size=batch_size, num_workers=2)
 
@@ -563,7 +563,7 @@ def main():
                     # 'pool': f"{loss_pool.item():.4f}",
                 })
 
-            break
+            # break
 
 
             # 将当前batch各项loss以dict形式存下来:

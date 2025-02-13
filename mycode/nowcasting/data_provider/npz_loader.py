@@ -265,7 +265,7 @@ class MyH5Dataset(Dataset):
 
 
 def get_loaders_h5(data_dir, batch_size=1, shuffle=True, num_workers=2,
-                train_label=1, test_label=None, prefetch_factor=4, augment=False):
+                train_label=200, test_label=None, prefetch_factor=4, augment=True):
     """
     参数:
       data_dir: 包含所有 .h5 文件的文件夹，例如 '../data/dataset/yangben'
