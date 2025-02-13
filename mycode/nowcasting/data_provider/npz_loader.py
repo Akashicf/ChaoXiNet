@@ -264,7 +264,7 @@ class MyH5Dataset(Dataset):
         return input_frames, target_frames
 
 
-def get_loaders_h5(data_dir, batch_size=1, shuffle=True, num_workers=2,
+def get_loaders_h5(data_dir, batch_size=1, shuffle=True, num_workers=0,
                 train_label=200, test_label=None, prefetch_factor=4, augment=True):
     """
     参数:

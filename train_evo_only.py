@@ -96,7 +96,7 @@ parser.add_argument('--worker', type=int, default=16)
 parser.add_argument('--cpu_worker', type=int, default=16)
 parser.add_argument('--dataset_name', type=str, default='radar')
 parser.add_argument('--dataset_path', type=str, default='../data/dataset/mrms/figure')
-parser.add_argument('--dataset_path_train', type=str, default='../data/dataset/mrms/us_eval.split/MRMS_Final_Test_Patch')
+parser.add_argument('--dataset_path_train', type=str, default='../data/dataset/yangben_solo_h5')
 parser.add_argument('--model_name', type=str, default='NowcastNet')
 parser.add_argument('--pretrained_model', type=str, default='data/checkpoints/mrms_model.ckpt')
 parser.add_argument('--gen_frm_dir', type=str, default='results/us/')
@@ -240,7 +240,9 @@ test_losses = []
 # args.batch_size = batch_size
 # train_loader, test_loader = datasets_factory.data_provider(args)
 
-train_loader, test_loader = get_loaders_h5(data_dir_h5, batch_size=args.batch_size, num_workers=2)
+train_loader, test_loader = get_loaders_h5(args.dataset_path_train, batch_size=args.batch_size, num_workers=2)
+
+# train_loader, test_loader = get_loaders_h5(data_dir_h5, batch_size=args.batch_size, num_workers=2)
 # train_loader, test_loader = get_merged_loader(merged_data_dir, batch_size=batch_size, num_workers=2)
 # train_loader, test_loader = get_loaders(data_dir, batch_size=batch_size, num_workers=2)
 
@@ -552,7 +554,7 @@ def main():
             # >>> 新增: 记录与保存逻辑 <<<
             global_step += 1  # 全局 iter 计数
 
-            if batch_id == len(train_loader):
+            if batch_id == len(train_loader)-1:
                 pbar.set_postfix({
                     'loss_evo': f"{train_evo_loss/train_count:.4f}",
                     # 'acc': f"{loss_accum.item():.4f}",
@@ -618,172 +620,172 @@ def main():
             test_count = 0
 
             # 开始测试循环(不需要梯度)
-            # with torch.no_grad():
-            #     # pbar_test = tqdm(test_loader, total=len(test_loader), desc=f"Test Epoch [{epoch + 1}/{num_epochs}]")
-            #     for batch_id, test_ims in enumerate(test_loader):
-            #         EvolutionNet.eval()
-            #         # GenerativeEncoder.eval()
-            #         # GenerativeDecoder.eval()
-            #         # NoiseProjector.eval()
-            #         # TemporalDiscriminator.eval()
-            #
-            #         if args.input_channel == 2:
-            #             test_ims = test_ims['radar_frames'].numpy()
-            #             test_ims = torch.FloatTensor(test_ims).to(args.device)
-            #
-            #             # (1) 转换形状: B,T,H,W,C
-            #             test_ims = test_ims[:, :, :, :, :1]
-            #             frames = test_ims.permute(0, 1, 4, 2, 3)  # => [B,T,C,H,W]
-            #             batch = frames.shape[0]
-            #             height = frames.shape[3]
-            #             width = frames.shape[4]
-            #
-            #             # (2) 拆分输入/目标
-            #             input_frames = frames[:, :args.input_length]  # [B,T_in,C,H,W]
-            #             target_frames = frames[:, args.input_length:, 0]  # [B,T_out,H,W], 只拿通道0
-            #             input_frames = input_frames.reshape(batch, args.input_length, height, width)
-            #             last_frames = test_ims[:, (args.input_length - 1):args.input_length, :, :, 0]
-            #
-            #         else:
-            #             # input_frames, target_frames = test_ims
-            #             # batch, T, C1, C2, height, width = input_frames.shape
-            #             # last_frames = input_frames[:, -1:, 1, 0].to(args.device)/65
-            #             # input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)/65
-            #             # target_frames = target_frames[:, :, 1, 0].to(args.device)/65
-            #             input_frames, target_frames = test_ims
-            #             batch, T, C1, height, width = input_frames.shape
-            #             last_frames = input_frames[:, -1:].to(args.device) / 65
-            #             input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
-            #             target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
-            #
-            #         loss_motion = 0
-            #         if use_motion == True:
-            #             intensity, motion = EvolutionNet(input_frames)
-            #             motion_ = motion.reshape(batch, args.gen_oc, 2, height, width)
-            #             intensity_ = intensity.reshape(batch, args.pred_length, 1, height, width)
-            #
-            #             series = []
-            #             series_bili = []
-            #
-            #             sample_tensor = torch.zeros(1, 1, args.img_height, args.img_width).to(args.device)
-            #             grid = make_grid(sample_tensor)
-            #             grid = grid.repeat(batch, 1, 1, 1)
-            #
-            #             t_forward = time.time() - t_forward
-            #             t_evo = time.time()
-            #
-            #             # EvolutionNet.inc.double_conv[0].weight.grad
-            #             # 多步演化, 每帧截断梯度
-            #             for i in range(args.pred_length):
-            #                 x_t = last_frames.detach()
-            #
-            #                 x_t_dot_bili = warp(x_t, motion_[:, i], grid, mode="bilinear", padding_mode="border")
-            #                 x_t_dot = warp(x_t, motion_[:, i], grid, mode="nearest", padding_mode="border")
-            #                 x_t_dot_dot = x_t_dot.detach() + intensity_[:, i]
-            #                 # last_frames_ = last_frames_
-            #
-            #                 last_frames = x_t_dot_dot
-            #                 series.append(x_t_dot_dot)
-            #                 series_bili.append(x_t_dot_bili)
-            #
-            #             evo_result = torch.cat(series, dim=1)
-            #             evo_result_bili = torch.cat(series_bili, dim=1)
-            #
-            #             t_evo = time.time() - t_evo
-            #             t_backward = time.time()
-            #
-            #             # ============ 演化网络损失及更新 ============
-            #             loss_motion = motion_reg(motion_, target_frames)
-            #             loss_accum = accumulation_loss(
-            #                 pred_final=evo_result,
-            #                 pred_bili=evo_result_bili,
-            #                 real=target_frames,  # [B, T_out, H, W]
-            #             )
-            #         else:
-            #             with torch.autocast(device_type=args.device, dtype=torch.float16, enabled=use_amp):
-            #                 evo_result = EvolutionNet(input_frames)
-            #                 t_forward = time.time() - t_forward
-            #                 t_backward = time.time()
-            #                 loss_accum = accumulation_loss(
-            #                     pred_final=evo_result*65,
-            #                     pred_bili=None,
-            #                     real=target_frames*65,  # [B, T_out, H, W]
-            #                 )
-            #
-            #         loss_evo = loss_accum + alpha * loss_motion
-            #         # ============ 生成网络 + 判别器 ============
-            #
-            #         # # 1) 生成器前向
-            #         # evo_feature = GenerativeEncoder(torch.cat([input_frames, evo_result_detach], dim=1))
-            #         #
-            #         # gen_result_list = []
-            #         # dis_result_pre_list = []
-            #         # for _ in range(args.pool_loss_k):
-            #         #     noise = torch.randn(batch, args.ngf, height // 32, width // 32).to(args.device)
-            #         #     noise_feature = NoiseProjector(noise)
-            #         #     noise_feature = noise_feature.reshape(
-            #         #         batch, -1, 4, 4, 8, 8
-            #         #     ).permute(0, 1, 4, 5, 2, 3).reshape(batch, -1, height // 8, width // 8)
-            #         #
-            #         #     feature = torch.cat([evo_feature, noise_feature], dim=1)
-            #         #     gen_result = GenerativeDecoder(feature, evo_result_detach)
-            #         #     # shape => [B, T_out, H, W], 视实际而定
-            #         #
-            #         #     gen_result = gen_result.unsqueeze(2)  # => [B,1,H,W] => or [B,T=1,H,W]
-            #         #     gen_result_list.append(gen_result)
-            #         #
-            #         #     # 判别器对 fake
-            #         #     dis_result_pre = TemporalDiscriminator(gen_result, input_frames.unsqueeze(2))
-            #         #     dis_result_pre_list.append(dis_result_pre)
-            #         #
-            #         # # ============ (a) 生成器更新 ============
-            #         # loss_adv = adversarial_loss(dis_result_pre_list)  # 生成器骗判别器
-            #         # loss_pool = pool_regularization(target_frames.unsqueeze(2), gen_result_list)
-            #         # loss_generative = beta * loss_adv + gamma * loss_pool
-            #         #
-            #         #
-            #         # # 判别器对 real
-            #         # dis_result_GT = TemporalDiscriminator(target_frames.unsqueeze(2), input_frames.unsqueeze(2))
-            #         # dis_result_pre = TemporalDiscriminator(gen_result.detach(), input_frames.unsqueeze(2))
-            #         # # ============ (b) 判别器更新 ============
-            #         # loss_disc = discriminator_loss(dis_result_GT, dis_result_pre)
-            #
-            #         # 累加loss
-            #         test_evo_loss += (loss_evo.item())
-            #         test_accum_loss += (loss_accum.item())
-            #         # test_motion_loss += (loss_motion.item())
-            #         # test_disc_loss += (loss_disc.item())
-            #         # test_gen_loss += (loss_generative.item())
-            #         # test_adv_loss += (loss_adv.item())
-            #         # test_pool_loss += (loss_pool.item())
-            #         test_count += 1
-            #
-            # # 计算平均loss
-            # test_evo_loss /= test_count
-            # test_accum_loss /= test_count
-            # test_motion_loss /= test_count
-            # test_disc_loss /= test_count
-            # test_gen_loss /= test_count
-            # test_adv_loss /= test_count
-            # test_pool_loss /= test_count
-            #
-            # # 保存到 test_losses
-            # test_losses.append({
-            #     'global_step': global_step,
-            #     'epoch': epoch,
-            #     'loss_evo': test_evo_loss,
-            #     'loss_accum': test_accum_loss,
-            #     'loss_motion': test_motion_loss,
-            #     'loss_disc': test_disc_loss,
-            #     'loss_gen': test_gen_loss,
-            #     'loss_adv': test_adv_loss,
-            #     'loss_pool': test_pool_loss,
-            # })
-            #
-            # # print(
-            # #     f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
+            with torch.no_grad():
+                # pbar_test = tqdm(test_loader, total=len(test_loader), desc=f"Test Epoch [{epoch + 1}/{num_epochs}]")
+                for batch_id, test_ims in enumerate(test_loader):
+                    EvolutionNet.eval()
+                    # GenerativeEncoder.eval()
+                    # GenerativeDecoder.eval()
+                    # NoiseProjector.eval()
+                    # TemporalDiscriminator.eval()
+
+                    if args.input_channel == 2:
+                        test_ims = test_ims['radar_frames'].numpy()
+                        test_ims = torch.FloatTensor(test_ims).to(args.device)
+
+                        # (1) 转换形状: B,T,H,W,C
+                        test_ims = test_ims[:, :, :, :, :1]
+                        frames = test_ims.permute(0, 1, 4, 2, 3)  # => [B,T,C,H,W]
+                        batch = frames.shape[0]
+                        height = frames.shape[3]
+                        width = frames.shape[4]
+
+                        # (2) 拆分输入/目标
+                        input_frames = frames[:, :args.input_length]  # [B,T_in,C,H,W]
+                        target_frames = frames[:, args.input_length:, 0]  # [B,T_out,H,W], 只拿通道0
+                        input_frames = input_frames.reshape(batch, args.input_length, height, width)
+                        last_frames = test_ims[:, (args.input_length - 1):args.input_length, :, :, 0]
+
+                    else:
+                        # input_frames, target_frames = test_ims
+                        # batch, T, C1, C2, height, width = input_frames.shape
+                        # last_frames = input_frames[:, -1:, 1, 0].to(args.device)/65
+                        # input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)/65
+                        # target_frames = target_frames[:, :, 1, 0].to(args.device)/65
+                        input_frames, target_frames = test_ims
+                        batch, T, C1, height, width = input_frames.shape
+                        last_frames = input_frames[:, -1:].to(args.device) / 65
+                        input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
+                        target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
+
+                    loss_motion = 0
+                    if use_motion == True:
+                        intensity, motion = EvolutionNet(input_frames)
+                        motion_ = motion.reshape(batch, args.gen_oc, 2, height, width)
+                        intensity_ = intensity.reshape(batch, args.pred_length, 1, height, width)
+
+                        series = []
+                        series_bili = []
+
+                        sample_tensor = torch.zeros(1, 1, args.img_height, args.img_width).to(args.device)
+                        grid = make_grid(sample_tensor)
+                        grid = grid.repeat(batch, 1, 1, 1)
+
+                        t_forward = time.time() - t_forward
+                        t_evo = time.time()
+
+                        # EvolutionNet.inc.double_conv[0].weight.grad
+                        # 多步演化, 每帧截断梯度
+                        for i in range(args.pred_length):
+                            x_t = last_frames.detach()
+
+                            x_t_dot_bili = warp(x_t, motion_[:, i], grid, mode="bilinear", padding_mode="border")
+                            x_t_dot = warp(x_t, motion_[:, i], grid, mode="nearest", padding_mode="border")
+                            x_t_dot_dot = x_t_dot.detach() + intensity_[:, i]
+                            # last_frames_ = last_frames_
+
+                            last_frames = x_t_dot_dot
+                            series.append(x_t_dot_dot)
+                            series_bili.append(x_t_dot_bili)
+
+                        evo_result = torch.cat(series, dim=1)
+                        evo_result_bili = torch.cat(series_bili, dim=1)
+
+                        t_evo = time.time() - t_evo
+                        t_backward = time.time()
+
+                        # ============ 演化网络损失及更新 ============
+                        loss_motion = motion_reg(motion_, target_frames)
+                        loss_accum = accumulation_loss(
+                            pred_final=evo_result,
+                            pred_bili=evo_result_bili,
+                            real=target_frames,  # [B, T_out, H, W]
+                        )
+                    else:
+                        with torch.autocast(device_type=args.device, dtype=torch.float16, enabled=use_amp):
+                            evo_result = EvolutionNet(input_frames)
+                            t_forward = time.time() - t_forward
+                            t_backward = time.time()
+                            loss_accum = accumulation_loss(
+                                pred_final=evo_result*65,
+                                pred_bili=None,
+                                real=target_frames*65,  # [B, T_out, H, W]
+                            )
+
+                    loss_evo = loss_accum + alpha * loss_motion
+                    # ============ 生成网络 + 判别器 ============
+
+                    # # 1) 生成器前向
+                    # evo_feature = GenerativeEncoder(torch.cat([input_frames, evo_result_detach], dim=1))
+                    #
+                    # gen_result_list = []
+                    # dis_result_pre_list = []
+                    # for _ in range(args.pool_loss_k):
+                    #     noise = torch.randn(batch, args.ngf, height // 32, width // 32).to(args.device)
+                    #     noise_feature = NoiseProjector(noise)
+                    #     noise_feature = noise_feature.reshape(
+                    #         batch, -1, 4, 4, 8, 8
+                    #     ).permute(0, 1, 4, 5, 2, 3).reshape(batch, -1, height // 8, width // 8)
+                    #
+                    #     feature = torch.cat([evo_feature, noise_feature], dim=1)
+                    #     gen_result = GenerativeDecoder(feature, evo_result_detach)
+                    #     # shape => [B, T_out, H, W], 视实际而定
+                    #
+                    #     gen_result = gen_result.unsqueeze(2)  # => [B,1,H,W] => or [B,T=1,H,W]
+                    #     gen_result_list.append(gen_result)
+                    #
+                    #     # 判别器对 fake
+                    #     dis_result_pre = TemporalDiscriminator(gen_result, input_frames.unsqueeze(2))
+                    #     dis_result_pre_list.append(dis_result_pre)
+                    #
+                    # # ============ (a) 生成器更新 ============
+                    # loss_adv = adversarial_loss(dis_result_pre_list)  # 生成器骗判别器
+                    # loss_pool = pool_regularization(target_frames.unsqueeze(2), gen_result_list)
+                    # loss_generative = beta * loss_adv + gamma * loss_pool
+                    #
+                    #
+                    # # 判别器对 real
+                    # dis_result_GT = TemporalDiscriminator(target_frames.unsqueeze(2), input_frames.unsqueeze(2))
+                    # dis_result_pre = TemporalDiscriminator(gen_result.detach(), input_frames.unsqueeze(2))
+                    # # ============ (b) 判别器更新 ============
+                    # loss_disc = discriminator_loss(dis_result_GT, dis_result_pre)
+
+                    # 累加loss
+                    test_evo_loss += (loss_evo.item())
+                    test_accum_loss += (loss_accum.item())
+                    # test_motion_loss += (loss_motion.item())
+                    # test_disc_loss += (loss_disc.item())
+                    # test_gen_loss += (loss_generative.item())
+                    # test_adv_loss += (loss_adv.item())
+                    # test_pool_loss += (loss_pool.item())
+                    test_count += 1
+
+            # 计算平均loss
+            test_evo_loss /= test_count
+            test_accum_loss /= test_count
+            test_motion_loss /= test_count
+            test_disc_loss /= test_count
+            test_gen_loss /= test_count
+            test_adv_loss /= test_count
+            test_pool_loss /= test_count
+
+            # 保存到 test_losses
+            test_losses.append({
+                'global_step': global_step,
+                'epoch': epoch,
+                'loss_evo': test_evo_loss,
+                'loss_accum': test_accum_loss,
+                'loss_motion': test_motion_loss,
+                'loss_disc': test_disc_loss,
+                'loss_gen': test_gen_loss,
+                'loss_adv': test_adv_loss,
+                'loss_pool': test_pool_loss,
+            })
+
             # print(
-            #     f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}")
+            #     f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}, disc_loss={test_disc_loss:.4f}, gen_loss={test_gen_loss:.4f}, adv={test_adv_loss:.4f}, pool={test_pool_loss:.4f}")
+            print(
+                f"=============================================> Test on step {global_step + 1}: evo_loss={test_evo_loss:.4f}, acc={test_accum_loss:.4f}, mot={test_motion_loss:.4f}")
 
         if not Train:
             break
