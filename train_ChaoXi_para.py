@@ -11,7 +11,9 @@ import h5py
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import OneCycleLR
