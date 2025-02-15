@@ -116,56 +116,56 @@ net = swin_unet = SwinTransformerSys(img_size=256,
 # out = net(input)
 # print(out.shape)
 
-# import torchview
-# # net = SwinTransformerV2().to('cuda')
-# # out = net(torch.randn(1, 10, 256, 256).to('cuda'))
-# # print(out.shape)
-#
-# dummy_input = torch.randn(16, 10, 256, 256).cuda()
-#
-#
-#
-# print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
-# graph = torchview.draw_graph(
-#     net,
-#     input_size=dummy_input.shape,
-#     expand_nested=True,
-#     save_graph=False,  # 先不让其自动保存
-#     roll=False,
-#     hide_inner_tensors=True,
-#     graph_dir='UD'
-# )
-#
-# dot = graph.visual_graph
-# # 设置 DPI
-# dot.graph_attr['dpi'] = '100'
-# # dot.attr(size="3,100!")
-# dot.attr(ratio="auto")
-#
-# dot.render(
-#     filename="swin_unet",  # 指定输出文件名（无后缀）
-#     directory="./",        # 输出目录
-#     cleanup=True,          # render后删除多余的临时文件
-#     format="png"           # 导出 png 格式
-# )
-#
-# graph.visual_graph
-# # 渲染并保存为 PDF（也可以保存为 SVG 等格式）
-# graph.visual_graph.attr(size="10000,20000!")
-# # graph.visual_graph.attr(ranksep="0.5")
-# # graph.render(format='pdf', cleanup=True)
-# print("已保存 torchview 可视化结构图到 model.pdf")
-#
-#
-# dot = graph.visual_graph
-# # dot.attr(rankdir="LR")  # 改为水平布局
-# dot.attr(size="10000,40000!")  # 调整 size
-# dot.attr(ratio="compress")
-# dot.render(
-#     filename="swin_unet",  # 输出文件名（不含后缀）
-#     format="png",  # 输出格式
-#     directory=".",  # 输出到当前文件夹
-#     cleanup=True  # 渲染后删除中间文件
-# )
-# print("已保存 torchview 可视化结构图到 model_torchview.pdf")
+import torchview
+# net = SwinTransformerV2().to('cuda')
+# out = net(torch.randn(1, 10, 256, 256).to('cuda'))
+# print(out.shape)
+
+dummy_input = torch.randn(16, 10, 256, 256).cuda()
+
+
+
+print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
+graph = torchview.draw_graph(
+    net,
+    input_size=dummy_input.shape,
+    expand_nested=True,
+    save_graph=False,  # 先不让其自动保存
+    roll=False,
+    hide_inner_tensors=True,
+    graph_dir='UD'
+)
+
+dot = graph.visual_graph
+# 设置 DPI
+dot.graph_attr['dpi'] = '100'
+# dot.attr(size="3,100!")
+dot.attr(ratio="auto")
+
+dot.render(
+    filename="swin_unet",  # 指定输出文件名（无后缀）
+    directory="./",        # 输出目录
+    cleanup=True,          # render后删除多余的临时文件
+    format="png"           # 导出 png 格式
+)
+
+graph.visual_graph
+# 渲染并保存为 PDF（也可以保存为 SVG 等格式）
+graph.visual_graph.attr(size="10000,20000!")
+# graph.visual_graph.attr(ranksep="0.5")
+# graph.render(format='pdf', cleanup=True)
+print("已保存 torchview 可视化结构图到 model.pdf")
+
+
+dot = graph.visual_graph
+# dot.attr(rankdir="LR")  # 改为水平布局
+dot.attr(size="10000,40000!")  # 调整 size
+dot.attr(ratio="compress")
+dot.render(
+    filename="swin_unet",  # 输出文件名（不含后缀）
+    format="png",  # 输出格式
+    directory=".",  # 输出到当前文件夹
+    cleanup=True  # 渲染后删除中间文件
+)
+print("已保存 torchview 可视化结构图到 model_torchview.pdf")
 

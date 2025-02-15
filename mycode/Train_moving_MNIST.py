@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from mycode.nowcasting.layers.ChaoXiNet.ChaoXiNet import ChaoXiNet
 from mycode.nowcasting.layers.PredFormer.PredFormer import *
 import torch
 from torch.utils.data import DataLoader
@@ -16,9 +18,12 @@ import os
 from tqdm import tqdm
 import glob
 from torch.optim.lr_scheduler import OneCycleLR
-
+from mycode.nowcasting.layers.SwinUnet.vision_transformer import SwinUnet
 # 必须在导入任何依赖 OpenMP 的库之前设置该环境变量
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+use_amp = True
 
 class MovingMNISTDataset(Dataset):
     """
@@ -86,26 +91,35 @@ train_npz = '../data/dataset/movingMNIST/mnist_test_seq.npy'
 train_set = MovingMNISTDataset(train_npz, train=True)
 # test_set  = MovingMNISTDataset(test_npz,  train=False)
 
-train_loader = DataLoader(train_set, batch_size=48, shuffle=True)
+train_loader = DataLoader(train_set, batch_size=12, shuffle=True)
 # test_loader  = DataLoader(test_set,  batch_size=4, shuffle=False)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # =========== 初始化模型 ===========
-model = QuadrupletSTTSNet(
-    image_size=64,
-    patch_size=8,
-    in_channels=1,  # MovingMNIST 为单通道
-    dim=256,        # 可根据显存调整
-    depth=6,        # 堆叠 2 层QuadrupletSTTSBlock
-    heads=8,
-    dim_head=32,
-    mlp_dim=1024,
-    dropout=0.,
-    T=10
-).to(device)
+# model = QuadrupletSTTSNet(
+#     image_size=64,
+#     patch_size=8,
+#     in_channels=1,  # MovingMNIST 为单通道
+#     dim=256,        # 可根据显存调整
+#     depth=6,        # 堆叠 2 层QuadrupletSTTSBlock
+#     heads=8,
+#     dim_head=32,
+#     mlp_dim=1024,
+#     dropout=0.,
+#     T=10
+# ).to(device)
+# from mycode.nowcasting.layers.SwinUnet.config import _C as config
+# model = SwinUnet(config, num_classes=10).to(device)
+model = ChaoXiNet( img_size=64, patch_size=2, T=10, in_chans=1, num_classes=1,
+                 embed_dim=48*3, depths=[2, 2, 2, 6], num_heads=[8, 8, 8, 8],
+                 window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
+                 norm_layer=nn.LayerNorm, ape=True, patch_norm=True,
+                 use_checkpoint=False, final_upsample="expand_first").cuda()
+# model.flops()
 
-checkpoint_dir = '../result/mnist/run4'
+checkpoint_dir = '../result/mnist/run21'
 
 # 尝试搜集已有 ckpt
 ckpts = glob.glob(os.path.join(checkpoint_dir, '*.pth'))
@@ -137,14 +151,14 @@ ckpts.sort()  # 根据名称排序，最后一个视作最新
 #     latest_ckpt = None
 
 
-
-optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01, betas=(0.5, 0.999))
-scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, steps_per_epoch=len(train_loader), epochs=200)
+num_epochs = 1000
+optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.00, betas=(0.5, 0.99))
+scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, steps_per_epoch=len(train_loader), epochs=num_epochs)
 train_losses = []
-
+scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
 # =========== 训练循环 ===========
-num_epochs = 200
+
 for epoch in range(num_epochs):
     pbar = tqdm(train_loader, total=len(train_loader), desc=f"Epoch [{epoch + 1}/{num_epochs}]")
     model.train()
@@ -153,17 +167,28 @@ for epoch in range(num_epochs):
         # print(1)
         # x, y: [B, 1, 10, 64, 64]
         x, y = data_one
-        x, y = x.to(device), y.to(device)
+        # x, y = x.to(device), y.to(device)
+        x, y = x.to(device).permute(0, 2, 1, 3, 4), y.to(device).permute(0, 2, 1, 3, 4)
+        # x = x[:,:,0]
+        # y = y[:,:,0]
 
         # 前向
-        pred = model(x)  # [B, 1, 10, 64, 64]
-        loss = F.mse_loss(pred*1, y*1)
+        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
+            pred = model(x)  # [B, 1, 10, 64, 64]
+            loss = F.mse_loss(pred*1, y*1)
 
         # 反向传播
+
+        # optimizer.zero_grad()
+        # loss.backward()
+        # optimizer.step()
+        # scheduler.step()
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
+
 
         total_loss += loss.item() * x.size(0)
 

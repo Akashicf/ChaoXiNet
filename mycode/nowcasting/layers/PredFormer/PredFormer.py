@@ -11,7 +11,7 @@ import math
 
 
 class MultiHeadAttention(nn.Module):
-    """与原始代码类似的多头注意力"""
+    """多头注意力"""
 
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
         super().__init__()

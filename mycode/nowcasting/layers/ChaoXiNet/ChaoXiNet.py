@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from einops import rearrange
 from timm.layers import DropPath, to_2tuple, trunc_normal_
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
+from einops import rearrange
+
 
 class MoEFFNGating(nn.Module):
     def __init__(self, dim, hidden_dim, num_experts):
@@ -246,12 +245,12 @@ class SwinTransformerBlock(nn.Module):
     def forward(self, x):
 
         H, W = self.input_resolution
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        B, T, N, D = x.shape
+        assert N == H * W, "input feature has wrong size"
 
-        shortcut = x
+        shortcut = rearrange(x, 'b t n d -> (b t) n d')
         x = self.norm1(x)
-        x = x.view(B, H, W, C)
+        x = rearrange(x, 'B T (H W) D -> (B T) H W D', H=H, W=W)
 
         # cyclic shift
         if self.shift_size > 0:
@@ -261,13 +260,13 @@ class SwinTransformerBlock(nn.Module):
 
         # partition windows
         x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, D)  # nW*B, window_size*window_size, C
 
         # W-MSA/SW-MSA
         attn_windows = self.attn(x_windows, mask=self.attn_mask)  # nW*B, window_size*window_size, C
 
         # merge windows
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, D)
         shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
 
         # reverse cyclic shift
@@ -275,11 +274,13 @@ class SwinTransformerBlock(nn.Module):
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
-        x = x.view(B, H * W, C)
+        x = x.view(B*T, H * W, D)
 
         # FFN
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        x = rearrange(x, '(B T) N D -> B T N D',B=B)
 
         return x
 
@@ -302,6 +303,109 @@ class SwinTransformerBlock(nn.Module):
         return flops
 
 
+class MultiHeadAttention(nn.Module):
+    """多头注意力"""
+
+    def __init__(self, dim, heads=8, attn_drop=0., proj_drop=0., qkv_bias=True, qk_scale=None):
+        super().__init__()
+        head_dim = dim // heads
+        self.heads = heads
+        self.scale = qk_scale or head_dim ** -0.5
+
+        self.norm = nn.LayerNorm(dim)
+        self.to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attend = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(attn_drop)
+        self.to_out = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.Dropout(proj_drop)
+        )
+
+    def forward(self, x):
+        """
+        假设输入 x 形状为 [B, seq_len, dim]
+        """
+        b, seq_len, dim = x.shape
+        x = self.norm(x)
+        qkv = self.to_qkv(x).chunk(3, dim=-1)  # [B, seq_len, heads*dim_head] -> (q, k, v)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # [b, heads, n, n]
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)  # [b, heads, n, dim_head]
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = self.to_out(out)
+        return out
+
+
+class SwiGLUFeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.0):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(dim, hidden_dim)
+        self.dropout1 = nn.Dropout(dropout)
+        self.linear_out = nn.Linear(hidden_dim, dim)
+        self.dropout2 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        """
+        输入形状 [B, seq_len, dim]
+        SwiGLU: out = (xW1) * Swish(xW2)
+        这里只是用一种简单实现示例
+        """
+        x = self.norm(x)
+
+        # 先做两次线性投影
+        x1 = self.fc1(x)  # 用于做“门”
+        x2 = self.fc2(x)  # 用于做“激活”
+
+        # Swish 激活: swish(x) = x * sigmoid(x)，这里可用 F.silu(x)
+        gated = x1 * nn.SiLU()(x2)  # 或者 x1 * F.silu(x2), 参考官方 SwiGLU
+
+        # Dropout -> Linear -> Dropout
+        gated = self.dropout1(gated)
+        out = self.linear_out(gated)
+        out = self.dropout2(out)
+
+        return out
+
+
+class TemporalTransformerBlock(nn.Module):
+    """
+    在同一层内依次执行四次注意力:
+    1) T-Attn
+    每次注意力后接 SwiGLU FFN
+    """
+
+    def __init__(self, dim, heads, mlp_dim, drop=0., attn_drop=0., drop_path=0.):
+        super().__init__()
+        # 空间注意力
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.attn = MultiHeadAttention(dim, heads, attn_drop=attn_drop, proj_drop=drop)
+        self.ffn = SwiGLUFeedForward(dim, mlp_dim, drop)
+
+    def forward(self, x):
+        """
+        x 形状: [B, T*N, D]
+        参数 T: 时间帧数
+        参数 N: 空间 patch 数 (H/p * W/p)
+        """
+        B, T, N, D = x.shape
+        # assert TN == T * N, "输入序列长度应当为 T*N"
+
+        # --- Step 1: T-Attn ---
+        x = rearrange(x, 'b t n d -> (b n) t d', b=B, n=N)  # 合并 t 到 seq_len，也可 transpose 来实现
+        out = self.drop_path(self.attn(x)) + x
+        out = self.drop_path(self.ffn(out)) + out
+
+        out = rearrange(out, '(b n) t d -> b t n d', b=B, n=N)
+
+        return out  # [B, T*N, D]
+
+
 class PatchMerging(nn.Module):
     r""" Patch Merging Layer.
 
@@ -320,24 +424,25 @@ class PatchMerging(nn.Module):
 
     def forward(self, x):
         """
-        x: B, H*W, C
+        x: B, H*W, D
         """
         H, W = self.input_resolution
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        B, T, N, D = x.shape
+        assert N == H * W, "input feature has wrong size"
         assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
 
-        x = x.view(B, H, W, C)
+        x = rearrange(x, 'b t (h w) d -> (b t) h w d', h=H, w=W)
 
-        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
-        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
-        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
-        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 C
-        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
-        x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
+        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 D
+        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 D
+        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 D
+        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 D
+        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*D
+        x = x.view(B*T, -1, 4 * D)  # B H/2*W/2 4*D
 
         x = self.norm(x)
         x = self.reduction(x)
+        x = rearrange(x, '(b t) n d -> b t n d', b=B, t=T)
 
         return x
 
@@ -361,17 +466,18 @@ class PatchExpand(nn.Module):
 
     def forward(self, x):
         """
-        x: B, H*W, C
+        x: B, H*W, D
         """
         H, W = self.input_resolution
         x = self.expand(x)
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        B, T, N, D = x.shape
+        assert N == H * W, "input feature has wrong size"
 
-        x = x.view(B, H, W, C)
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=2, p2=2, c=C // 4)
-        x = x.view(B, -1, C // 4)
+        x = rearrange(x, 'b t (h w) d -> (b t) h w d', h=H, w=W)
+        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=2, p2=2, c=D // 4)
+        x = x.view(B*T, -1, D // 4)
         x = self.norm(x)
+        x = rearrange(x, '(b t) n d -> b t n d', b=B, t=T)
 
         return x
 
@@ -382,24 +488,25 @@ class FinalPatchExpand_X4(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
         self.dim_scale = dim_scale
-        self.expand = nn.Linear(dim, 16 * dim, bias=False)
+        self.expand = nn.Linear(dim, dim_scale**2 * dim, bias=False)
         self.output_dim = dim
         self.norm = norm_layer(self.output_dim)
 
     def forward(self, x):
         """
-        x: B, H*W, C
+        x: B, H*W, D
         """
         H, W = self.input_resolution
         x = self.expand(x)
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        B, T, N, D = x.shape
+        assert N == H * W, "input feature has wrong size"
 
-        x = x.view(B, H, W, C)
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale,
-                      c=C // (self.dim_scale ** 2))
-        x = x.view(B, -1, self.output_dim)
+        # x = rearrange(x, 'b t (h w) d -> (b t) h w d ', h=H, w=W)
+        x = rearrange(x, 'b t (h w) (p1 p2 c)-> b t (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale,
+                      c=D // (self.dim_scale ** 2), h=H, w=W)
+        # x = x.view(B, -1, self.output_dim)
         x = self.norm(x)
+        # x = rearrange(x, '(b t) n d -> b t n d', b=B, t=T)
 
         return x
 
@@ -436,15 +543,25 @@ class BasicLayer(nn.Module):
 
         # build blocks
         self.blocks = nn.ModuleList([
-            SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+            nn.Sequential(SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
                                  num_heads=num_heads, window_size=window_size,
-                                 shift_size=0 if (i % 2 == 0) else window_size // 2,
+                                 shift_size=0 ,
                                  mlp_ratio=mlp_ratio,
                                  qkv_bias=qkv_bias, qk_scale=qk_scale,
                                  drop=drop, attn_drop=attn_drop,
-                                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                                 norm_layer=norm_layer)
-            for i in range(depth)])
+                                 drop_path=drop_path[2 * i] if isinstance(drop_path, list) else drop_path,
+                                 norm_layer=norm_layer),
+                          SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+                                               num_heads=num_heads, window_size=window_size,
+                                               shift_size=window_size // 2,
+                                               mlp_ratio=mlp_ratio,
+                                               qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                               drop=drop, attn_drop=attn_drop,
+                                               drop_path=drop_path[2 * i +1] if isinstance(drop_path, list) else drop_path,
+                                               norm_layer=norm_layer),
+                          TemporalTransformerBlock(dim=dim, heads=num_heads, mlp_dim=int(dim * mlp_ratio), drop=drop, attn_drop=attn_drop, drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path)
+                          )
+            for i in range(depth//2)])
 
         # patch merging layer
         if downsample is not None:
@@ -506,15 +623,28 @@ class BasicLayer_up(nn.Module):
 
         # build blocks
         self.blocks = nn.ModuleList([
-            SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
-                                 num_heads=num_heads, window_size=window_size,
-                                 shift_size=0 if (i % 2 == 0) else window_size // 2,
-                                 mlp_ratio=mlp_ratio,
-                                 qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                 drop=drop, attn_drop=attn_drop,
-                                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                                 norm_layer=norm_layer)
-            for i in range(depth)])
+            nn.Sequential(SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+                                               num_heads=num_heads, window_size=window_size,
+                                               shift_size=0,
+                                               mlp_ratio=mlp_ratio,
+                                               qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                               drop=drop, attn_drop=attn_drop,
+                                               drop_path=drop_path[2 * i] if isinstance(drop_path, list) else drop_path,
+                                               norm_layer=norm_layer),
+                          SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+                                               num_heads=num_heads, window_size=window_size,
+                                               shift_size=window_size // 2,
+                                               mlp_ratio=mlp_ratio,
+                                               qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                               drop=drop, attn_drop=attn_drop,
+                                               drop_path=drop_path[2 * i + 1] if isinstance(drop_path,
+                                                                                            list) else drop_path,
+                                               norm_layer=norm_layer),
+                          TemporalTransformerBlock(dim=dim, heads=num_heads, mlp_dim=int(dim * mlp_ratio), drop=drop,
+                                                   attn_drop=attn_drop,
+                                                   drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path)
+                          )
+            for i in range(depth // 2)])
 
         # patch merging layer
         if upsample is not None:
@@ -564,13 +694,17 @@ class PatchEmbed(nn.Module):
             self.norm = None
 
     def forward(self, x):
-        B, C, H, W = x.shape
+        # input B T C H W
+        B, T, C, H, W = x.shape
         # FIXME look at relaxing size constraints
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose(1, 2)  # B Ph*Pw C
+        x = rearrange(x, 'b t c h w -> (b t) c h w')
+        x = self.proj(x)
+        x = rearrange(x, '(B T) D H W -> B T (H W) D', B=B, T=T)
         if self.norm is not None:
             x = self.norm(x)
+        # output B T (H W) D
         return x
 
     def flops(self):
@@ -581,7 +715,7 @@ class PatchEmbed(nn.Module):
         return flops
 
 
-class SwinTransformerSys(nn.Module):
+class ChaoXiNet(nn.Module):
     r""" Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
           https://arxiv.org/pdf/2103.14030
@@ -607,8 +741,8 @@ class SwinTransformerSys(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
     """
 
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
-                 embed_dim=96, depths=[2, 2, 2, 2], depths_decoder=[1, 2, 2, 2], num_heads=[3, 6, 12, 24],
+    def __init__(self, img_size=224, patch_size=4, T=10, in_chans=3, num_classes=1000,
+                 embed_dim=96, depths=[2, 2, 2, 2], num_heads=[3, 6, 12, 24],
                  window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
@@ -616,9 +750,9 @@ class SwinTransformerSys(nn.Module):
         super().__init__()
 
         print(
-            "SwinTransformerSys expand initial----depths:{};depths_decoder:{};drop_path_rate:{};num_classes:{}".format(
+            "SwinTransformerSys expand initial----depths:{};drop_path_rate:{};num_classes:{}".format(
                 depths,
-                depths_decoder, drop_path_rate, num_classes))
+                drop_path_rate, num_classes))
 
         self.num_classes = num_classes
         self.num_layers = len(depths)
@@ -640,7 +774,7 @@ class SwinTransformerSys(nn.Module):
 
         # absolute position embedding
         if self.ape:
-            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+            self.absolute_pos_embed = nn.Parameter(torch.zeros(1, T, num_patches, embed_dim))
             trunc_normal_(self.absolute_pos_embed, std=.02)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -703,7 +837,7 @@ class SwinTransformerSys(nn.Module):
         if self.final_upsample == "expand_first":
             print("---final upsample expand_first---")
             self.up = FinalPatchExpand_X4(input_resolution=(img_size // patch_size, img_size // patch_size),
-                                          dim_scale=4, dim=embed_dim)
+                                          dim_scale=patch_size, dim=embed_dim)
             self.output = nn.Conv2d(in_channels=embed_dim, out_channels=self.num_classes, kernel_size=1, bias=False)
 
         self.apply(self._init_weights)
@@ -757,14 +891,17 @@ class SwinTransformerSys(nn.Module):
 
     def up_x4(self, x):
         H, W = self.patches_resolution
-        B, L, C = x.shape
-        assert L == H * W, "input features has wrong size"
+        B, T, N, D = x.shape
+        assert N == H * W, "input features has wrong size"
 
         if self.final_upsample == "expand_first":
             x = self.up(x)
-            x = x.view(B, 4 * H, 4 * W, -1)
-            x = x.permute(0, 3, 1, 2)  # B,C,H,W
+            B, T, H, W, D = x.shape
+            x = rearrange(x, 'b t h w d -> (b t) d h w')
+            # x = x.view(B, 4 * H, 4 * W, -1)
+            #             # x = x.permute(0, 3, 1, 2)  # B,C,H,W
             x = self.output(x)
+            x = rearrange(x, '(b t) c h w -> b t c h w', b=B, t=T)
 
         return x
 
@@ -783,3 +920,90 @@ class SwinTransformerSys(nn.Module):
         flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
         flops += self.num_features * self.num_classes
         return flops
+
+
+# net = ChaoXiNet( img_size=64, patch_size=2, T=10, in_chans=3, num_classes=3,
+#                  embed_dim=96, depths=[2, 2, 2, 6], num_heads=[3, 6, 12, 24],
+#                  window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+#                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
+#                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
+#                  use_checkpoint=False, final_upsample="expand_first")
+#
+#
+#
+# import torchview
+# dummy_input = torch.randn(4, 10, 3, 64, 64)
+# out = net(dummy_input)
+# print(out.shape)
+
+
+# print("\n>>> [1] 使用 torchview 可视化网络结构图 ...")
+# graph = torchview.draw_graph(
+#     net,
+#     input_size=dummy_input.shape,
+#     expand_nested=True,
+#     save_graph=False,  # 先不让其自动保存
+#     roll=False,
+#     hide_inner_tensors=True,
+#     graph_dir='UD'
+# )
+#
+# dot = graph.visual_graph
+# # 设置 DPI
+# dot.graph_attr['dpi'] = '100'
+# # dot.attr(size="3,100!")
+# dot.attr(ratio="auto")
+#
+# dot.render(
+#     filename="ChaoXiNet",  # 指定输出文件名（无后缀）
+#     directory="./",        # 输出目录
+#     cleanup=True,          # render后删除多余的临时文件
+#     format="png"           # 导出 png 格式
+# )
+
+
+
+
+# import torch
+# from einops import rearrange
+# import torch.nn as nn
+#
+# def multi_transform(x, H, W):
+#     """
+#     多步转换：
+#       1. 将 (B, H*W, C) 变为 (B, H, W, C)
+#       2. 使用 rearrange 展开空间 patch： (B, H, W, C) -> (B, H*2, W*2, C//4)
+#       3. 再 view 成 (B, -1, C//4)
+#     """
+#     B, L, C = x.shape
+#     # 检查输入长度是否匹配
+#     assert L == H * W, "输入特征数量不匹配"
+#     # 步骤1：转换为图像形状
+#     x = x.view(B, H, W, C)
+#     # 步骤2：展开空间 patch（假设 p1=2, p2=2，即每个方向扩展一倍，同时通道数变为原来的1/4）
+#     x = rearrange(x, 'b h w (p1 p2 c) -> b (h p1) (w p2) c', p1=2, p2=2, c=C // 4)
+#     # 步骤3：扁平化空间维度
+#     x = x.view(B, -1, C // 4)
+#     return x
+#
+# def single_transform(x, H, W):
+#     """
+#     单步转换：
+#       使用一个 rearrange 表达式将 (B, H*W, C) 直接转换为 (B, H*2 * W*2, C//4)
+#     """
+#     # 假设输入形状为 (B, H*W, C) ，并且 C 能被4整除
+#     x = rearrange(x, 'b (h w) (p2 p1 c) -> b (h p1 w p2) c', h=H, w=W, p1=2, p2=2, c=x.shape[-1] // 4)
+#     return x
+#
+# # 测试两种方法是否得到相同结果
+# B, H, W, C = 2, 4, 4, 64  # 例如，批次2，4x4个patch，每个patch通道数64
+# # 创建随机输入：形状为 (B, H*W, C)
+# x = torch.randn(B, H * W, C)
+#
+# result_multi = multi_transform(x, H, W)
+# result_single = single_transform(x, H, W)
+#
+# print("多步转换结果形状:", result_multi.shape)     # 应为 (B, H*2*W*2, C//4)
+# print("单步转换结果形状:", result_single.shape)
+# # 比较两者的数值差异（应该非常接近0）
+# print("两种方法结果差异:", torch.norm(result_multi - result_single))

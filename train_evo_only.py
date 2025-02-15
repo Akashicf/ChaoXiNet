@@ -28,6 +28,7 @@ from mycode.nowcasting.models.temporal_discriminator import Temporal_Discriminat
 from mycode.nowcasting.layers.generation.generative_network import Generative_Encoder, Generative_Decoder
 from mycode.nowcasting.layers.evolution.evolution_network import Evolution_Network
 from mycode.nowcasting.layers.generation.noise_projector import Noise_Projector
+from mycode.nowcasting.layers.ChaoXiNet.ChaoXiNet import ChaoXiNet
 from torch.optim.lr_scheduler import OneCycleLR
 from mycode.nowcasting.loss_function.loss_evolution import *
 from mycode.nowcasting.loss_function.loss_discriminator import *
@@ -107,7 +108,7 @@ parser.add_argument('--total_length', type=int, default=20)
 parser.add_argument('--img_height', type=int, default=256)
 parser.add_argument('--img_width', type=int, default=256)
 parser.add_argument('--img_ch', type=int, default=2)
-parser.add_argument('--batch_size', type=int, default=4)
+parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--num_save_samples', type=int, default=1000)
 parser.add_argument('--ngf', type=int, default=32)
 parser.add_argument('--visualize', action='store_true',
@@ -126,12 +127,12 @@ args.ic_feature = args.ngf * 10
 
 args.pool_loss_k = 2
 args.use_num = 10
-args.checkpoint_path = '../result/PredFormer'
+args.checkpoint_path = '../result/ChaoXiNet'
 data_dir = '../data/dataset/yangben_all'
 data_dir_h5 = '../data/dataset/yangben_solo_h5'
 
 # merged_data_dir = '../data/dataset/merged_data.npz'
-args.experiment = 'run7'
+args.experiment = 'run1'
 # hyperparameters
 # evo_net
 alpha = 0.01
@@ -182,19 +183,26 @@ class SwinUnetMotion(nn.Module):
         return self.intensity_net(input), self.motion_net(input)
 
 
-EvolutionNet = QuadrupletSTTSNet(
-    image_size=256,
-    patch_size=16,
-    in_channels=1,
-    dim=1024,
-    depth=6,
-    heads=8,
-    dim_head=32,
-    mlp_dim=2048,
-    dropout=0.0,
-    dropout_path=0.0,
-    T=10
-).cuda()
+# EvolutionNet = QuadrupletSTTSNet(
+#     image_size=256,
+#     patch_size=16,
+#     in_channels=1,
+#     dim=512,
+#     depth=6,
+#     heads=8,
+#     dim_head=24,
+#     mlp_dim=1024,
+#     dropout=0.1,
+#     dropout_path=0.25,
+#     T=10
+# ).cuda()
+
+EvolutionNet = ChaoXiNet( img_size=256, patch_size=4, T=10, in_chans=1, num_classes=1,
+                 embed_dim=48*3, depths=[2, 2, 2, 4], num_heads=[4, 4, 8, 8],
+                 window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 drop_rate=0.2, attn_drop_rate=0.2, drop_path_rate=0.25,
+                 norm_layer=nn.LayerNorm, ape=True, patch_norm=True,
+                 use_checkpoint=False, final_upsample="expand_first").cuda()
 # EvolutionNet = SwinUnet(config, num_classes=10).cuda()
 # network = None
 # EvolutionNet = Evolution_Network(args.input_length*args.input_channel, args.pred_length, base_c=32).to(args.device)
@@ -364,11 +372,16 @@ def main():
                 # last_frames = input_frames[:, -1:, 1, 0].to(args.device)/65
                 # input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)/65
                 # target_frames = target_frames[:, :, 1, 0].to(args.device)/65
+                # input_frames, target_frames = test_ims
+                # batch, T, C1, height, width = input_frames.shape
+                # last_frames = input_frames[:, -1:].to(args.device)/65
+                # input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device)/65
+                # target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device)/65
                 input_frames, target_frames = test_ims
                 batch, T, C1, height, width = input_frames.shape
                 last_frames = input_frames[:, -1:].to(args.device)/65
-                input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device)/65
-                target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device)/65
+                input_frames = input_frames.to(args.device)/65
+                target_frames = target_frames.to(args.device)/65
 
 
 
@@ -582,7 +595,7 @@ def main():
         })
 
         # 每 100 iter 存一次 ckpt
-        if not epoch:
+        if epoch:
             ckpt_path = os.path.join(checkpoint_dir, f"ckpt_step{global_step:06d}.pth")
             torch.save({
                 'epoch': epoch,
@@ -652,11 +665,16 @@ def main():
                         # last_frames = input_frames[:, -1:, 1, 0].to(args.device)/65
                         # input_frames = input_frames[:, :, 1, 0].reshape(batch, -1, height, width).to(args.device)/65
                         # target_frames = target_frames[:, :, 1, 0].to(args.device)/65
+                        # input_frames, target_frames = test_ims
+                        # batch, T, C1, height, width = input_frames.shape
+                        # last_frames = input_frames[:, -1:].to(args.device) / 65
+                        # input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
+                        # target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
                         input_frames, target_frames = test_ims
                         batch, T, C1, height, width = input_frames.shape
                         last_frames = input_frames[:, -1:].to(args.device) / 65
-                        input_frames = input_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
-                        target_frames = target_frames[:, :].reshape(batch, C1, T, height, width).to(args.device) / 65
+                        input_frames = input_frames.to(args.device) / 65
+                        target_frames = target_frames.to(args.device) / 65
 
                     loss_motion = 0
                     if use_motion == True:

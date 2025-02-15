@@ -17,7 +17,7 @@ def wdis_l1(pred, gt, reg_loss, value_lim):
     diff_w = torch.abs(pred - gt) * w
     if reg_loss:
         loss_n = torch.sum(diff_w, (-1, -2)) / torch.sum(w, (-1, -2))
-        loss = torch.sum(loss_n, -1).mean()
+        loss = torch.sum(loss_n, -2).mean()
     else:
         loss = diff_w.mean() * gt.shape[1]
     return loss
